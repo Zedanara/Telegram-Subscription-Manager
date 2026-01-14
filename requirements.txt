@@ -1,2 +1,4 @@
 aiogram==3.3.0
 MyApplication~=0.1.0
+pydantic==2.6.4
+pydantic-core==2.16.3
