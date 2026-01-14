@@ -1,4 +1,6 @@
-aiogram==3.3.0
-MyApplication~=0.1.0
+--only-binary=:all:
 pydantic==2.6.4
 pydantic-core==2.16.3
+aiogram
+aiohttp
+MyApplication~=0.1.0
