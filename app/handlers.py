@@ -1,3 +1,5 @@
+import os
+from dotenv import load_dotenv
 from aiogram import F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
@@ -6,9 +8,11 @@ from aiogram.fsm.context import FSMContext
 
 import app.keyboards as kb
 
+load_dotenv()
+
 router = Router()
 
-ADMIN_ID = 340099222
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 
 class Register(StatesGroup):
