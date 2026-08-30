@@ -1,7 +1,7 @@
-from datetime import datetime
-
 from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton,
                            InlineKeyboardMarkup, InlineKeyboardButton)
+
+from app.domain.pricing import get_current_price
 
 # ========== ОБЫЧНЫЕ КЛАВИАТУРЫ (если нужны) ==========
 
@@ -34,8 +34,7 @@ inside_menu = InlineKeyboardMarkup(inline_keyboard=[
 
 # Меню раздела "Оплата"
 def get_payment_menu() -> InlineKeyboardMarkup:
-    # hotfix: temporary September pricing, Epic 5 will replace with real pricing service
-    price = 45 if datetime.now() < datetime(2026, 10, 1) else 55
+    price = get_current_price()
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f'💸 Оплатить {price} zł',

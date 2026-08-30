@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from aiogram import F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
@@ -8,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 
 import app.keyboards as kb
 from app.config import settings
+from app.domain.pricing import get_current_price
 
 router = Router()
 
@@ -88,8 +87,7 @@ async def show_examples(callback: CallbackQuery):
 @router.callback_query(F.data == 'payment')
 async def show_payment(callback: CallbackQuery):
     """Показать информацию об оплате"""
-    # hotfix: temporary September pricing, Epic 5 will replace with real pricing service
-    price = 45 if datetime.now() < datetime(2026, 10, 1) else 55
+    price = get_current_price()
     text = (
         f"💳 Стоимость участия в закрытом клубе: {price} zł\n\n"
         "После оплаты ты автоматически получаешь доступ в закрытый Telegram-канал.\n\n"
