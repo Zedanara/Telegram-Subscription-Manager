@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.db.models import Payment, Subscription, SubscriptionStatus, User
 from app.db.session import get_session
+from app.domain.subscription import transition
 
 
 def _utcnow() -> datetime:
@@ -35,6 +36,11 @@ class UserRepository:
         if user is not None:
             return user
         return await UserRepository.create(telegram_id)
+
+    @staticmethod
+    async def get_by_id(user_id: int) -> User | None:
+        async with get_session() as session:
+            return await session.get(User, user_id)
 
 
 class SubscriptionRepository:
@@ -70,7 +76,9 @@ class SubscriptionRepository:
 
     @staticmethod
     async def update_status(
-        subscription_id: int, new_status: SubscriptionStatus | str
+        subscription_id: int,
+        new_status: SubscriptionStatus | str,
+        expires_at: datetime | None = None,
     ) -> Subscription:
         if isinstance(new_status, str):
             new_status = SubscriptionStatus(new_status)
@@ -78,7 +86,9 @@ class SubscriptionRepository:
             subscription = await session.get(Subscription, subscription_id)
             if subscription is None:
                 raise ValueError(f"Subscription {subscription_id} not found")
-            subscription.status = new_status
+            transition(subscription, new_status)
+            if expires_at is not None:
+                subscription.expires_at = expires_at
             await session.commit()
             await session.refresh(subscription)
             return subscription

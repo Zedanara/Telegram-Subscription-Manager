@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 
 from aiogram import F, Router
 from aiogram.types import Message, CallbackQuery
@@ -8,6 +9,10 @@ from aiogram.fsm.context import FSMContext
 
 import app.keyboards as kb
 from app.config import settings
+from app.db.models import SubscriptionStatus
+from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
+from app.domain.pricing import get_current_price
+from app.domain.subscription import InvalidTransitionError
 
 router = Router()
 
@@ -88,8 +93,7 @@ async def show_examples(callback: CallbackQuery):
 @router.callback_query(F.data == 'payment')
 async def show_payment(callback: CallbackQuery):
     """Показать информацию об оплате"""
-    # hotfix: temporary September pricing, Epic 5 will replace with real pricing service
-    price = 45 if datetime.now() < datetime(2026, 10, 1) else 55
+    price = get_current_price()
     text = (
         f"💳 Стоимость участия в закрытом клубе: {price} zł\n\n"
         "После оплаты ты автоматически получаешь доступ в закрытый Telegram-канал.\n\n"
@@ -128,32 +132,80 @@ async def request_screenshot(callback: CallbackQuery, state: FSMContext):
 async def receive_screenshot(message: Message, state: FSMContext):
     """Получить скриншот от пользователя"""
     user = message.from_user
-    
+
+    db_user = await UserRepository.get_or_create(user.id)
+    subscription = await SubscriptionRepository.create(
+        user_id=db_user.id, expires_at=None
+    )
+    await PaymentRepository.create(
+        subscription_id=subscription.id,
+        provider="manual",
+        provider_ref=f"manual-{message.message_id}",
+        amount=Decimal(get_current_price()),
+        currency="PLN",
+    )
+
     caption = (
         f"💳 Новая оплата!\n\n"
         f"👤 От: {user.full_name}\n"
         f"🆔 ID: {user.id}\n"
         f"📱 Username: @{user.username if user.username else 'не указан'}"
     )
-    
 
     try:
         await message.bot.send_photo(
             chat_id=ADMIN_ID,
             photo=message.photo[-1].file_id,
-            caption=caption
+            caption=caption,
+            reply_markup=kb.get_confirm_payment_keyboard(subscription.id)
         )
     except Exception as e:
         print(f"Ошибка отправки админу: {e}")
-    
-   
+
+
     await message.answer(
         text="✅ Спасибо! Твой скриншот отправлен Ирине.\n\n"
              "Доступ будет активирован в течение дня. Я пришлю тебе уведомление! 💫",
         reply_markup=kb.main_menu
     )
-    
+
     await state.clear()
+
+
+@router.callback_query(F.data.startswith('confirm_payment:'))
+async def confirm_payment(callback: CallbackQuery):
+    """Админ подтверждает оплату и активирует подписку"""
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
+
+    subscription_id = int(callback.data.split(':', 1)[1])
+    expires_at = datetime.now() + timedelta(days=30)
+
+    try:
+        subscription = await SubscriptionRepository.update_status(
+            subscription_id, SubscriptionStatus.ACTIVE, expires_at=expires_at
+        )
+    except InvalidTransitionError:
+        await callback.answer("Эта оплата уже обработана.", show_alert=True)
+        return
+
+    subscriber = await UserRepository.get_by_id(subscription.user_id)
+    if subscriber is not None:
+        try:
+            await callback.bot.send_message(
+                chat_id=subscriber.telegram_id,
+                text="🎉 Твоя оплата подтверждена! Доступ в закрытый клуб активен 30 дней.\n\n"
+                     "Ирина добавит тебя в канал в течение дня 💫"
+            )
+        except Exception as e:
+            print(f"Ошибка отправки подтверждения пользователю: {e}")
+
+    await callback.message.edit_caption(
+        caption=(callback.message.caption or "") + "\n\n✅ Оплата подтверждена",
+        reply_markup=None
+    )
+    await callback.answer("Подписка активирована")
 
 
 @router.message(ScreenshotState.waiting_for_screenshot)
