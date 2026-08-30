@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.db.models import Payment, Subscription, SubscriptionStatus, User
 from app.db.session import get_session
+from app.domain.subscription import transition
 
 
 def _utcnow() -> datetime:
@@ -78,7 +79,7 @@ class SubscriptionRepository:
             subscription = await session.get(Subscription, subscription_id)
             if subscription is None:
                 raise ValueError(f"Subscription {subscription_id} not found")
-            subscription.status = new_status
+            transition(subscription, new_status)
             await session.commit()
             await session.refresh(subscription)
             return subscription
