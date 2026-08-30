@@ -1,4 +1,7 @@
 aiogram==3.30.0
 python-dotenv==1.2.2
 pydantic-settings==2.15.0
+sqlalchemy[asyncio]==2.0.52
+alembic==1.19.1
+asyncpg==0.31.0
 
