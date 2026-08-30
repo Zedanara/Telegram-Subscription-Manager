@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton,
                            InlineKeyboardMarkup, InlineKeyboardButton)
 
@@ -31,18 +33,17 @@ inside_menu = InlineKeyboardMarkup(inline_keyboard=[
 
 
 # Меню раздела "Оплата"
-payment_menu = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(
-        text='💸 Оплатить 99 zł', 
-        url='https://buy.stripe.com/твоя-ссылка-99zl'
-    )],
-    [InlineKeyboardButton(
-        text='💸 Оплатить 129 zł', 
-        url='https://buy.stripe.com/твоя-ссылка-129zl'
-    )],
-    [InlineKeyboardButton(text='📩 Отправить скрин оплаты', callback_data='send_screenshot')],
-    [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
-])
+def get_payment_menu() -> InlineKeyboardMarkup:
+    # hotfix: temporary September pricing, Epic 5 will replace with real pricing service
+    price = 45 if datetime.now() < datetime(2026, 10, 1) else 55
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f'💸 Оплатить {price} zł',
+            url=f'https://buy.stripe.com/твоя-ссылка-{price}zl'
+        )],
+        [InlineKeyboardButton(text='📩 Отправить скрин оплаты', callback_data='send_screenshot')],
+        [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
+    ])
 
 # Простая кнопка "Назад"
 back_menu = InlineKeyboardMarkup(inline_keyboard=[

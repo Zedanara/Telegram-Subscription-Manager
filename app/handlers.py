@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aiogram import F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
@@ -86,15 +88,15 @@ async def show_examples(callback: CallbackQuery):
 @router.callback_query(F.data == 'payment')
 async def show_payment(callback: CallbackQuery):
     """Показать информацию об оплате"""
+    # hotfix: temporary September pricing, Epic 5 will replace with real pricing service
+    price = 45 if datetime.now() < datetime(2026, 10, 1) else 55
     text = (
-        "💳 Стоимость участия в закрытом клубе:\n"
-        "— 99 zł при оплате до 20 числа месяца\n"
-        "— 129 zł после 20 числа\n\n"
+        f"💳 Стоимость участия в закрытом клубе: {price} zł\n\n"
         "После оплаты ты автоматически получаешь доступ в закрытый Telegram-канал.\n\n"
         "💡 Оплата принимается через Stripe или BLIK.\n\n"
         "✨ После оплаты отправь скрин в этот чат, и я активирую доступ вручную в течение дня."
     )
-    await callback.message.edit_text(text, reply_markup=kb.payment_menu)
+    await callback.message.edit_text(text, reply_markup=kb.get_payment_menu())
     await callback.answer()
 
 
