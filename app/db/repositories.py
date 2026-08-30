@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 
-from app.db.models import Subscription, SubscriptionStatus, User
+from app.db.models import Payment, Subscription, SubscriptionStatus, User
 from app.db.session import get_session
 
 
@@ -113,3 +114,37 @@ class SubscriptionRepository:
                 )
             )
             return list(result.scalars().all())
+
+
+class PaymentRepository:
+    @staticmethod
+    async def create(
+        subscription_id: int,
+        provider: str,
+        provider_ref: str,
+        amount: Decimal,
+        currency: str,
+    ) -> Payment:
+        async with get_session() as session:
+            payment = Payment(
+                subscription_id=subscription_id,
+                provider=provider,
+                provider_ref=provider_ref,
+                amount=amount,
+                currency=currency,
+            )
+            session.add(payment)
+            await session.commit()
+            await session.refresh(payment)
+            return payment
+
+    @staticmethod
+    async def get_by_provider_ref(provider: str, provider_ref: str) -> Payment | None:
+        async with get_session() as session:
+            result = await session.execute(
+                select(Payment).where(
+                    Payment.provider == provider,
+                    Payment.provider_ref == provider_ref,
+                )
+            )
+            return result.scalar_one_or_none()
