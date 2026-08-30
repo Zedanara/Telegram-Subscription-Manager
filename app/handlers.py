@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
@@ -8,8 +9,10 @@ from aiogram.fsm.context import FSMContext
 
 import app.keyboards as kb
 from app.config import settings
+from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
+from app.domain.subscription import InvalidTransitionError
 
 router = Router()
 
@@ -167,6 +170,42 @@ async def receive_screenshot(message: Message, state: FSMContext):
     )
 
     await state.clear()
+
+
+@router.callback_query(F.data.startswith('confirm_payment:'))
+async def confirm_payment(callback: CallbackQuery):
+    """Админ подтверждает оплату и активирует подписку"""
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
+
+    subscription_id = int(callback.data.split(':', 1)[1])
+    expires_at = datetime.now() + timedelta(days=30)
+
+    try:
+        subscription = await SubscriptionRepository.update_status(
+            subscription_id, SubscriptionStatus.ACTIVE, expires_at=expires_at
+        )
+    except InvalidTransitionError:
+        await callback.answer("Эта оплата уже обработана.", show_alert=True)
+        return
+
+    subscriber = await UserRepository.get_by_id(subscription.user_id)
+    if subscriber is not None:
+        try:
+            await callback.bot.send_message(
+                chat_id=subscriber.telegram_id,
+                text="🎉 Твоя оплата подтверждена! Доступ в закрытый клуб активен 30 дней.\n\n"
+                     "Ирина добавит тебя в канал в течение дня 💫"
+            )
+        except Exception as e:
+            print(f"Ошибка отправки подтверждения пользователю: {e}")
+
+    await callback.message.edit_caption(
+        caption=(callback.message.caption or "") + "\n\n✅ Оплата подтверждена",
+        reply_markup=None
+    )
+    await callback.answer("Подписка активирована")
 
 
 @router.message(ScreenshotState.waiting_for_screenshot)
