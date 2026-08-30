@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from aiogram import F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
@@ -6,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 
 import app.keyboards as kb
 from app.config import settings
+from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
 
 router = Router()
@@ -126,31 +129,43 @@ async def request_screenshot(callback: CallbackQuery, state: FSMContext):
 async def receive_screenshot(message: Message, state: FSMContext):
     """Получить скриншот от пользователя"""
     user = message.from_user
-    
+
+    db_user = await UserRepository.get_or_create(user.id)
+    subscription = await SubscriptionRepository.create(
+        user_id=db_user.id, expires_at=None
+    )
+    await PaymentRepository.create(
+        subscription_id=subscription.id,
+        provider="manual",
+        provider_ref=f"manual-{message.message_id}",
+        amount=Decimal(get_current_price()),
+        currency="PLN",
+    )
+
     caption = (
         f"💳 Новая оплата!\n\n"
         f"👤 От: {user.full_name}\n"
         f"🆔 ID: {user.id}\n"
         f"📱 Username: @{user.username if user.username else 'не указан'}"
     )
-    
 
     try:
         await message.bot.send_photo(
             chat_id=ADMIN_ID,
             photo=message.photo[-1].file_id,
-            caption=caption
+            caption=caption,
+            reply_markup=kb.get_confirm_payment_keyboard(subscription.id)
         )
     except Exception as e:
         print(f"Ошибка отправки админу: {e}")
-    
-   
+
+
     await message.answer(
         text="✅ Спасибо! Твой скриншот отправлен Ирине.\n\n"
              "Доступ будет активирован в течение дня. Я пришлю тебе уведомление! 💫",
         reply_markup=kb.main_menu
     )
-    
+
     await state.clear()
 
 

@@ -44,6 +44,15 @@ def get_payment_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
     ])
 
+# Кнопка подтверждения оплаты (для админа)
+def get_confirm_payment_keyboard(subscription_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text='✅ Confirm payment',
+            callback_data=f'confirm_payment:{subscription_id}'
+        )]
+    ])
+
 # Простая кнопка "Назад"
 back_menu = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
