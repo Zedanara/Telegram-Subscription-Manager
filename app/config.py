@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str
+    bot_username: str  # no leading @, used to build https://t.me/<bot_username> deep links
     admin_id: int
     database_url: str | None = None  # built from db_* fields below if not set directly
     stripe_secret_key: str | None = None  # stub for Epic 5, not used yet
