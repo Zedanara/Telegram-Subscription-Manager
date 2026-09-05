@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
 from app.domain.subscription import InvalidTransitionError
+from app.services.stripe_service import create_checkout_session
 
 router = Router()
 
@@ -101,6 +103,18 @@ async def show_payment(callback: CallbackQuery):
         "✨ После оплаты отправь скрин в этот чат, и я активирую доступ вручную в течение дня."
     )
     await callback.message.edit_text(text, reply_markup=kb.get_payment_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == 'stripe_checkout')
+async def stripe_checkout(callback: CallbackQuery):
+    """Создать Stripe Checkout Session и отправить пользователю ссылку на оплату"""
+    checkout_url = await asyncio.to_thread(create_checkout_session, callback.from_user.id)
+    text = (
+        "💳 Ссылка на оплату готова — доступны карта и BLIK.\n\n"
+        "После оплаты Ирина активирует твой доступ в течение дня 💫"
+    )
+    await callback.message.answer(text, reply_markup=kb.get_stripe_checkout_keyboard(checkout_url))
     await callback.answer()
 
 

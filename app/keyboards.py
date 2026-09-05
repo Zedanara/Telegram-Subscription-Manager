@@ -37,10 +37,17 @@ def get_payment_menu() -> InlineKeyboardMarkup:
     price = get_current_price()
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f'💸 Оплатить {price} zł',
-            url=f'https://buy.stripe.com/твоя-ссылка-{price}zl'
+            text=f'💳 Оплатить картой / BLIK ({price} zł)',
+            callback_data='stripe_checkout'
         )],
         [InlineKeyboardButton(text='📩 Отправить скрин оплаты', callback_data='send_screenshot')],
+        [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
+    ])
+
+# Кнопка со ссылкой на готовую Stripe Checkout Session
+def get_stripe_checkout_keyboard(checkout_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='💳 Перейти к оплате', url=checkout_url)],
         [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
     ])
 
