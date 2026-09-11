@@ -37,7 +37,7 @@ HANDLED_EVENTS = frozenset(
 BOT_KEY = web.AppKey("bot", Bot)
 
 
-def _extract_telegram_id(session: stripe.checkout.Session) -> int | None:
+def _extract_telegram_id(session: dict) -> int | None:
     """The payer's telegram_id, set as client_reference_id when the Checkout
     Session was created (see app/services/stripe_service.py)."""
     raw = session.get("client_reference_id")
@@ -47,7 +47,7 @@ def _extract_telegram_id(session: stripe.checkout.Session) -> int | None:
         return None
 
 
-def _extract_amount(session: stripe.checkout.Session) -> tuple[Decimal, str]:
+def _extract_amount(session: dict) -> tuple[Decimal, str]:
     """Stripe reports totals in minor units (grosze for PLN)."""
     currency = (session.get("currency") or "pln").upper()
     amount_total = session.get("amount_total")
@@ -98,7 +98,9 @@ async def handle_stripe_webhook(request: web.Request) -> web.Response:
         logger.info("Ignoring unhandled Stripe event type %s", event_type)
         return web.Response(status=200, text="ignored")
 
-    session = event["data"]["object"]
+    # construct_event hands back StripeObjects, which are not dicts and raise
+    # AttributeError on .get() — convert once so absent keys read as None.
+    session = event["data"]["object"].to_dict()
     session_id = session["id"]
 
     # Stripe retries on any non-2xx and may also deliver the same event twice,
