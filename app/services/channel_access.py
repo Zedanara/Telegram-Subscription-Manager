@@ -1,7 +1,7 @@
-"""Granting a paying subscriber access to the closed Telegram channel.
+"""Telling a paying subscriber their payment landed, and letting them in.
 
 Every failure here is logged and swallowed: by the time this runs the payment
-is already confirmed and persisted, so a missing CHANNEL_ID or a Telegram
+is already confirmed and committed, so a missing CHANNEL_ID or a Telegram
 outage must never turn into a failed webhook and a retry storm.
 """
 import logging
@@ -13,20 +13,29 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_CONFIRMED_WITH_LINK = (
+    "🎉 Оплата получена! Доступ в закрытый клуб активен 30 дней.\n\n"
+    "🔗 Твоя персональная ссылка на канал:\n{invite_link}\n\n"
+    "Ссылка одноразовая — не передавай её другим 💫"
+)
 
-async def grant_channel_access(bot: Bot, telegram_id: int) -> bool:
-    """Create a single-use invite link and DM it to the subscriber.
+# No link to give yet, but the payer must never be left wondering whether the
+# money arrived.
+_CONFIRMED_WITHOUT_LINK = (
+    "🎉 Оплата получена! Доступ в закрытый клуб активен 30 дней.\n\n"
+    "Ирина добавит тебя в канал в течение дня — если ссылка не придёт, "
+    "напиши ей прямо здесь 💫"
+)
 
-    Returns True when the link was delivered, False when it was skipped or
-    failed. Never raises.
-    """
+
+async def _create_invite_link(bot: Bot, telegram_id: int) -> str | None:
     if not settings.channel_id:
         logger.warning(
             "CHANNEL_ID is not configured — skipping the channel invite for "
             "telegram_id %s. The subscription is active; invite this user manually.",
             telegram_id,
         )
-        return False
+        return None
 
     try:
         invite = await bot.create_chat_invite_link(
@@ -40,24 +49,38 @@ async def grant_channel_access(bot: Bot, telegram_id: int) -> bool:
             telegram_id,
             exc,
         )
-        return False
+        return None
+
+    return invite.invite_link
+
+
+async def confirm_and_grant_access(bot: Bot, telegram_id: int) -> bool:
+    """DM the subscriber that their payment is confirmed, with a single-use
+    invite link when one can be created.
+
+    Returns True if the message was delivered (with or without a link).
+    Never raises.
+    """
+    invite_link = await _create_invite_link(bot, telegram_id)
+    text = (
+        _CONFIRMED_WITH_LINK.format(invite_link=invite_link)
+        if invite_link
+        else _CONFIRMED_WITHOUT_LINK
+    )
 
     try:
-        await bot.send_message(
-            chat_id=telegram_id,
-            text=(
-                "🎉 Оплата получена! Доступ в закрытый клуб активен 30 дней.\n\n"
-                f"🔗 Твоя персональная ссылка на канал:\n{invite.invite_link}\n\n"
-                "Ссылка одноразовая — не передавай её другим 💫"
-            ),
-        )
+        await bot.send_message(chat_id=telegram_id, text=text)
     except TelegramAPIError as exc:
         logger.error(
-            "Created invite link for telegram_id %s but could not deliver it: %s",
+            "Could not deliver the payment confirmation to telegram_id %s: %s",
             telegram_id,
             exc,
         )
         return False
 
-    logger.info("Delivered single-use channel invite link to telegram_id %s", telegram_id)
+    logger.info(
+        "Confirmed payment to telegram_id %s (invite link: %s)",
+        telegram_id,
+        "sent" if invite_link else "not available",
+    )
     return True
