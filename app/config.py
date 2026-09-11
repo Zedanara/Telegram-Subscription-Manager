@@ -1,6 +1,6 @@
 import sys
 
-from pydantic import ValidationError, model_validator
+from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,11 +20,25 @@ class Settings(BaseSettings):
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 8000
 
+    # Closed Telegram channel the bot invites paying subscribers to. Still
+    # pending from Irina, so it is optional: when unset the invite step is
+    # skipped and the rest of the payment flow runs unchanged.
+    channel_id: int | str | None = None
+
     db_user: str | None = None
     db_password: str | None = None
     db_name: str | None = None
     db_host: str = "db"  # matches the docker-compose service name; override for local host testing
     db_port: int = 5432
+
+    @field_validator("channel_id", "stripe_secret_key", "stripe_webhook_secret", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: object) -> object:
+        """A key left empty in .env arrives as "", which is not the same as
+        absent for these optional fields — normalise it to None."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def _build_database_url(self) -> "Settings":
