@@ -8,6 +8,7 @@ be exposed on this port.
 import asyncio
 import logging
 
+import stripe
 from aiogram import Bot
 from aiohttp import web
 
@@ -22,9 +23,37 @@ STRIPE_WEBHOOK_PATH = "/webhook/stripe"
 BOT_KEY = web.AppKey("bot", Bot)
 
 
+def _verify_event(payload: bytes, signature: str) -> stripe.Event:
+    """Return the verified Stripe event, or raise. There is deliberately no
+    branch here that accepts an unverified payload — anything reaching the
+    caller has been signed with our webhook secret."""
+    return stripe.Webhook.construct_event(
+        payload, signature, settings.stripe_webhook_secret
+    )
+
+
 async def handle_stripe_webhook(request: web.Request) -> web.Response:
+    if not settings.stripe_webhook_secret:
+        # Misconfiguration, not a bad request: 500 makes Stripe retry once the
+        # secret is in place instead of silently dropping a real payment.
+        logger.critical(
+            "STRIPE_WEBHOOK_SECRET is not configured — refusing to handle webhooks"
+        )
+        return web.Response(status=500, text="webhook secret not configured")
+
     payload = await request.read()
-    logger.info("Received Stripe webhook (%d bytes)", len(payload))
+    signature = request.headers.get("Stripe-Signature", "")
+
+    try:
+        event = _verify_event(payload, signature)
+    except ValueError:
+        logger.warning("Rejected Stripe webhook: payload is not valid JSON")
+        return web.Response(status=400, text="invalid payload")
+    except stripe.SignatureVerificationError as exc:
+        logger.warning("Rejected Stripe webhook: signature verification failed (%s)", exc)
+        return web.Response(status=400, text="invalid signature")
+
+    logger.info("Verified Stripe event %s (%s)", event["id"], event["type"])
     return web.Response(status=200, text="ok")
 
 
