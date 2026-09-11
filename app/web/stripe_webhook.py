@@ -16,6 +16,7 @@ from aiohttp import web
 from app.config import settings
 from app.db.repositories import PaymentRepository
 from app.domain.pricing import get_current_price
+from app.services.channel_access import grant_channel_access
 from app.services.payment_service import PROVIDER, activate_paid_checkout
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,10 @@ async def handle_stripe_webhook(request: web.Request) -> web.Response:
             exc_info=True,
         )
         return web.Response(status=500, text="activation failed")
+
+    # Best effort by design: the payment is already recorded, so a failed or
+    # skipped invite is logged rather than reported back to Stripe.
+    await grant_channel_access(request.app[BOT_KEY], telegram_id)
 
     return web.Response(status=200, text="ok")
 
