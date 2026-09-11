@@ -13,10 +13,23 @@ from aiogram import Bot
 from aiohttp import web
 
 from app.config import settings
+from app.db.repositories import PaymentRepository
 
 logger = logging.getLogger(__name__)
 
 STRIPE_WEBHOOK_PATH = "/webhook/stripe"
+
+# Value stored in payments.provider; also the idempotency key namespace.
+PROVIDER = "stripe"
+
+# Everything else Stripe may send is acknowledged and ignored.
+HANDLED_EVENTS = frozenset(
+    {
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+        "checkout.session.async_payment_failed",
+    }
+)
 
 # Handlers reach the Bot instance through the app, so the webhook never has to
 # build a second Bot (and a second aiohttp session) of its own.
@@ -53,7 +66,32 @@ async def handle_stripe_webhook(request: web.Request) -> web.Response:
         logger.warning("Rejected Stripe webhook: signature verification failed (%s)", exc)
         return web.Response(status=400, text="invalid signature")
 
-    logger.info("Verified Stripe event %s (%s)", event["id"], event["type"])
+    event_id = event["id"]
+    event_type = event["type"]
+    logger.info("Verified Stripe event %s (%s)", event_id, event_type)
+
+    if event_type not in HANDLED_EVENTS:
+        logger.info("Ignoring unhandled Stripe event type %s", event_type)
+        return web.Response(status=200, text="ignored")
+
+    session = event["data"]["object"]
+    session_id = session["id"]
+
+    # Stripe retries on any non-2xx and may also deliver the same event twice,
+    # so the checkout session id is the idempotency key: one Payment row per
+    # session, ever. Acknowledge duplicates with 200 so retries stop.
+    existing = await PaymentRepository.get_by_provider_ref(PROVIDER, session_id)
+    if existing is not None:
+        logger.info(
+            "Checkout session %s already recorded as payment %s — "
+            "skipping duplicate event %s (%s)",
+            session_id,
+            existing.id,
+            event_id,
+            event_type,
+        )
+        return web.Response(status=200, text="already processed")
+
     return web.Response(status=200, text="ok")
 
 
