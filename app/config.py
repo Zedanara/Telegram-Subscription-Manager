@@ -12,7 +12,13 @@ class Settings(BaseSettings):
     admin_id: int
     database_url: str | None = None  # built from db_* fields below if not set directly
     stripe_secret_key: str | None = None  # stub for Epic 5, not used yet
-    stripe_webhook_secret: str | None = None  # stub for Epic 5, not used yet
+    stripe_webhook_secret: str | None = None  # signs the Stripe webhook, see app/web/stripe_webhook.py
+
+    # Stripe delivers webhooks over HTTP, so the bot serves a small aiohttp app
+    # alongside polling. Host 0.0.0.0 so the port is reachable from outside the
+    # container; the published port is set in docker-compose.yml.
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8000
 
     db_user: str | None = None
     db_password: str | None = None
