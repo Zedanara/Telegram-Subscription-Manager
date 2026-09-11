@@ -87,7 +87,30 @@ class UserRepository:
         user = await UserRepository.get_by_telegram_id(telegram_id, session=session)
         if user is not None:
             return user
-        return await UserRepository.create(telegram_id, session=session)
+
+        async with _session_scope(session) as (db, owned):
+            # Two concurrent webhooks for the same new payer both reach this
+            # point and both INSERT; one loses on users.telegram_id. Doing it
+            # inside a SAVEPOINT means the loser's failed INSERT does not
+            # poison the caller's transaction — it just reads the winner's row.
+            try:
+                async with db.begin_nested():
+                    new_user = User(telegram_id=telegram_id)
+                    db.add(new_user)
+                    await db.flush()
+            except IntegrityError:
+                result = await db.execute(
+                    select(User).where(User.telegram_id == telegram_id)
+                )
+                winner = result.scalars().first()
+                if winner is None:
+                    raise
+                return winner
+
+            if owned:
+                await db.commit()
+                await db.refresh(new_user)
+            return new_user
 
     @staticmethod
     async def get_by_id(
