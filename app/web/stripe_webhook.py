@@ -16,7 +16,7 @@ from aiohttp import web
 from app.config import settings
 from app.db.repositories import PaymentRepository
 from app.domain.pricing import get_current_price
-from app.services.channel_access import grant_channel_access
+from app.services.channel_access import confirm_and_grant_access
 from app.services.payment_service import PROVIDER, activate_paid_checkout
 
 logger = logging.getLogger(__name__)
@@ -154,22 +154,28 @@ async def handle_stripe_webhook(request: web.Request) -> web.Response:
     amount, currency = _extract_amount(session)
 
     try:
-        await activate_paid_checkout(telegram_id, session_id, amount, currency)
+        subscription = await activate_paid_checkout(
+            telegram_id, session_id, amount, currency
+        )
     except Exception:
-        # The Payment row may already exist, which means the idempotency check
-        # will short-circuit Stripe's retry — this needs a human.
-        logger.critical(
-            "Failed to activate subscription for checkout session %s (telegram_id=%s) "
-            "after a confirmed payment — manual confirmation required",
+        # The whole unit of work rolled back, so nothing was half-written and
+        # Stripe's retry can start cleanly from scratch. 500 makes it retry.
+        logger.error(
+            "Failed to activate subscription for checkout session %s (telegram_id=%s) — "
+            "rolled back, awaiting Stripe retry",
             session_id,
             telegram_id,
             exc_info=True,
         )
         return web.Response(status=500, text="activation failed")
 
-    # Best effort by design: the payment is already recorded, so a failed or
-    # skipped invite is logged rather than reported back to Stripe.
-    await grant_channel_access(request.app[BOT_KEY], telegram_id)
+    if subscription is None:
+        # A concurrent delivery won the race and is sending the confirmation.
+        return web.Response(status=200, text="already processed")
+
+    # Best effort by design: the payment is already committed, so a failed
+    # confirmation is logged rather than reported back to Stripe.
+    await confirm_and_grant_access(request.app[BOT_KEY], telegram_id)
 
     return web.Response(status=200, text="ok")
 

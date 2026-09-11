@@ -8,8 +8,16 @@ import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.models import Subscription, SubscriptionStatus
-from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
+from app.db.repositories import (
+    DuplicatePaymentError,
+    PaymentRepository,
+    SubscriptionRepository,
+    UserRepository,
+)
+from app.db.session import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +27,18 @@ PROVIDER = "stripe"
 SUBSCRIPTION_DAYS = 30
 
 
-async def _find_or_create_subscription(user_id: int) -> Subscription:
+async def _find_or_create_subscription(
+    user_id: int, session: AsyncSession
+) -> Subscription:
     """Renew the user's active subscription if there is one, otherwise start a
     fresh PENDING one — the same shape the screenshot flow creates, so
     activation always runs through the state machine rather than around it."""
-    active = await SubscriptionRepository.get_active_for_user(user_id)
+    active = await SubscriptionRepository.get_active_for_user(user_id, session=session)
     if active is not None:
         return active
-    return await SubscriptionRepository.create(user_id=user_id, expires_at=None)
+    return await SubscriptionRepository.create(
+        user_id=user_id, expires_at=None, session=session
+    )
 
 
 async def activate_paid_checkout(
@@ -34,37 +46,61 @@ async def activate_paid_checkout(
     session_id: str,
     amount: Decimal,
     currency: str,
-) -> Subscription:
+) -> Subscription | None:
     """Record the payment and activate the payer's subscription for 30 days.
 
-    Callers must have checked PaymentRepository.get_by_provider_ref first —
-    this function is not idempotent on its own.
+    Everything happens in one transaction: the user, the subscription, the
+    Payment row and the ACTIVE transition either all commit or none do, so a
+    failure can never leave a recorded payment with no access behind it.
+
+    Returns the activated Subscription, or None when another concurrent
+    delivery of the same checkout session already recorded it — the unique
+    constraint on (provider, provider_ref) is what makes that safe.
     """
-    user = await UserRepository.get_or_create(telegram_id)
-    subscription = await _find_or_create_subscription(user.id)
+    async with get_session() as db:
+        try:
+            async with db.begin():
+                user = await UserRepository.get_or_create(telegram_id, session=db)
+                subscription = await _find_or_create_subscription(user.id, session=db)
 
-    payment = await PaymentRepository.create(
-        subscription_id=subscription.id,
-        provider=PROVIDER,
-        provider_ref=session_id,
-        amount=amount,
-        currency=currency,
-    )
+                payment = await PaymentRepository.create(
+                    subscription_id=subscription.id,
+                    provider=PROVIDER,
+                    provider_ref=session_id,
+                    amount=amount,
+                    currency=currency,
+                    session=db,
+                )
 
-    # Exactly the call the admin manual-confirm flow makes, so
-    # app/domain/subscription.py stays the single place transitions are decided.
-    expires_at = datetime.now() + timedelta(days=SUBSCRIPTION_DAYS)
-    subscription = await SubscriptionRepository.update_status(
-        subscription.id, SubscriptionStatus.ACTIVE, expires_at=expires_at
-    )
+                # Exactly the call the admin manual-confirm flow makes, so
+                # app/domain/subscription.py stays the single place
+                # transitions are decided.
+                expires_at = datetime.now() + timedelta(days=SUBSCRIPTION_DAYS)
+                await SubscriptionRepository.update_status(
+                    subscription.id,
+                    SubscriptionStatus.ACTIVE,
+                    expires_at=expires_at,
+                    session=db,
+                )
+                payment_id = payment.id
+                subscription_id = subscription.id
+        except DuplicatePaymentError:
+            # A concurrent delivery inserted first; its transaction owns the
+            # activation and ours rolled back cleanly. Nothing to do.
+            logger.info(
+                "Checkout session %s was recorded concurrently — "
+                "this delivery activated nothing",
+                session_id,
+            )
+            return None
 
     logger.info(
         "Payment %s (%s %s, session %s) activated subscription %s for telegram_id %s until %s",
-        payment.id,
+        payment_id,
         amount,
         currency,
         session_id,
-        subscription.id,
+        subscription_id,
         telegram_id,
         expires_at,
     )
