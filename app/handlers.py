@@ -154,7 +154,9 @@ async def receive_screenshot(message: Message, state: FSMContext):
     await PaymentRepository.create(
         subscription_id=subscription.id,
         provider="manual",
-        provider_ref=f"manual-{message.message_id}",
+        # message_id is only unique per chat, so it alone would collide
+        # across users under the payments (provider, provider_ref) constraint.
+        provider_ref=f"manual-{user.id}-{message.message_id}",
         amount=Decimal(get_current_price()),
         currency="PLN",
     )
