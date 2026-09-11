@@ -32,3 +32,9 @@ If a task seems to require breaking these, stop and ask before proceeding.
 ## Conventions
 - No hardcoded secrets or IDs anywhere in source — always via config.
 - Business logic must stay decoupled from aiogram handlers where possible.
+
+## Testing convention
+For manual/throwaway test payments (test Checkout sessions, fake 
+client_reference_id, etc.), use the developer's own telegram_id: 
+1590739481. Never use ADMIN_ID's real value (Irina's 
+account) as a placeholder in tests — it sends real Telegram DMs to her.
