@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Enum, ForeignKey, Numeric, String, func
+from sqlalchemy import Enum, ForeignKey, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -46,6 +46,15 @@ class Subscription(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
+
+    # One payment per provider reference, ever. This is what makes webhook
+    # delivery idempotent under concurrency: two simultaneous deliveries of the
+    # same Stripe checkout session cannot both insert.
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "provider_ref", name="uq_payments_provider_provider_ref"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("subscriptions.id"), index=True)
