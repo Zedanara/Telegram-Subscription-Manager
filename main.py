@@ -7,6 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
 from app.handlers import router
+from app.jobs.auto_kick import register as register_auto_kick
 from app.jobs.expiration_warnings import register as register_expiration_warnings
 from app.web.stripe_webhook import run_webhook_server
 
@@ -37,6 +38,7 @@ async def main():
 
     scheduler = build_scheduler()
     register_expiration_warnings(scheduler)
+    register_auto_kick(scheduler)
     scheduler.start()
 
     try:
