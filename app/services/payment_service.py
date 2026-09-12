@@ -5,7 +5,7 @@ HTTP concerns, this module owns the user/payment/subscription side so the same
 logic can be driven from anywhere later (retry job, admin tooling).
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from app.db.repositories import (
     UserRepository,
 )
 from app.db.session import get_session
+from app.domain.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def activate_paid_checkout(
                 # Exactly the call the admin manual-confirm flow makes, so
                 # app/domain/subscription.py stays the single place
                 # transitions are decided.
-                expires_at = datetime.now() + timedelta(days=SUBSCRIPTION_DAYS)
+                expires_at = utcnow() + timedelta(days=SUBSCRIPTION_DAYS)
                 await SubscriptionRepository.update_status(
                     subscription.id,
                     SubscriptionStatus.ACTIVE,
