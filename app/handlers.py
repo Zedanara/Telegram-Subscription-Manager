@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
@@ -14,6 +14,7 @@ from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
 from app.domain.subscription import InvalidTransitionError
+from app.domain.time import utcnow
 from app.services.stripe_service import create_checkout_session
 
 router = Router()
@@ -196,7 +197,7 @@ async def confirm_payment(callback: CallbackQuery):
         return
 
     subscription_id = int(callback.data.split(':', 1)[1])
-    expires_at = datetime.now() + timedelta(days=30)
+    expires_at = utcnow() + timedelta(days=30)
 
     try:
         subscription = await SubscriptionRepository.update_status(

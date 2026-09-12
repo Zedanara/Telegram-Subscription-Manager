@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -10,13 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Payment, Subscription, SubscriptionStatus, User
 from app.db.session import get_session
 from app.domain.subscription import transition
+from app.domain.time import utcnow
 
 # Name of the constraint declared on Payment; see the model for why it exists.
 PAYMENT_PROVIDER_REF_CONSTRAINT = "uq_payments_provider_provider_ref"
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class DuplicatePaymentError(Exception):
@@ -184,7 +181,7 @@ class SubscriptionRepository:
     async def list_expiring_within(
         days: int, session: AsyncSession | None = None
     ) -> list[Subscription]:
-        now = _utcnow()
+        now = utcnow()
         threshold = now + timedelta(days=days)
         async with _session_scope(session) as (db, _):
             result = await db.execute(
@@ -201,7 +198,7 @@ class SubscriptionRepository:
 
     @staticmethod
     async def list_expired(session: AsyncSession | None = None) -> list[Subscription]:
-        now = _utcnow()
+        now = utcnow()
         async with _session_scope(session) as (db, _):
             result = await db.execute(
                 select(Subscription).where(

@@ -49,6 +49,17 @@ class Settings(BaseSettings):
             )
         return self
 
+    @property
+    def sync_database_url(self) -> str:
+        """Same database as database_url, over a synchronous driver.
+
+        APScheduler's SQLAlchemyJobStore issues plain synchronous SQLAlchemy
+        calls, which asyncpg (an async-only driver) cannot back.
+        """
+        if self.database_url is None:
+            raise ValueError("database_url is not configured")
+        return self.database_url.replace("+asyncpg", "+psycopg", 1)
+
 
 try:
     settings = Settings()
