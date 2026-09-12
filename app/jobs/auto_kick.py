@@ -109,6 +109,14 @@ async def _remove_from_channel(bot: Bot, telegram_id: int) -> None:
         )
         return
 
+    if settings.dry_run_kick:
+        logger.warning(
+            "DRY RUN: would kick telegram_id=%s from channel %s",
+            telegram_id,
+            settings.channel_id,
+        )
+        return
+
     try:
         # ban immediately followed by unban(only_if_banned=True): this
         # removes them now without a permanent ban, so a future invite link
@@ -152,6 +160,13 @@ async def _kick_one(bot: Bot, subscription: Subscription) -> None:
         return
 
     await _remove_from_channel(bot, user.telegram_id)
+
+    if settings.dry_run_kick:
+        logger.warning(
+            "DRY RUN: would send access-removed DM to telegram_id=%s",
+            user.telegram_id,
+        )
+        return
 
     try:
         await bot.send_message(chat_id=user.telegram_id, text=_KICKED_TEXT)

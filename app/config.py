@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     # skipped and the rest of the payment flow runs unchanged.
     channel_id: int | str | None = None
 
+    # Safety valve for the first production run of the auto-kick job
+    # (app/jobs/auto_kick.py): when true, every side effect is logged
+    # instead of performed — no ban/unban calls, no "access removed" DMs —
+    # while the DB state machine and admin-protection check still run for
+    # real, so the job's decisions can be observed before anyone is
+    # actually removed.
+    dry_run_kick: bool = False
+
     db_user: str | None = None
     db_password: str | None = None
     db_name: str | None = None
