@@ -21,10 +21,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    # Stripe posts payment confirmations to this port; it must match
-    # WEBHOOK_PORT in .env (the app defaults to 8000 when unset).
-    ports:
-      - "${WEBHOOK_PORT:-8000}:${WEBHOOK_PORT:-8000}"
+    # Not published to the host: Caddy (below) is the only public entry
+    # point now, terminating HTTPS and reverse-proxying to bot:8000 over
+    # the Docker network. "expose" documents the intent; Compose already
+    # lets sibling containers reach this port without it.
+    expose:
+      - "${WEBHOOK_PORT:-8000}"
     depends_on:
       db:
         condition: service_healthy
