@@ -7,6 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
 from app.handlers import router
+from app.jobs.expiration_warnings import register as register_expiration_warnings
 from app.web.stripe_webhook import run_webhook_server
 
 logging.basicConfig(level=logging.INFO,
@@ -35,6 +36,7 @@ async def main():
     logger.info("Бот запущен")
 
     scheduler = build_scheduler()
+    register_expiration_warnings(scheduler)
     scheduler.start()
 
     try:
