@@ -3,10 +3,10 @@ from datetime import timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
-from aiogram.types import Message, CallbackQuery
-from aiogram.filters import CommandStart, Command
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 
 import app.keyboards as kb
 from app.config import settings
