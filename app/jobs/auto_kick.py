@@ -5,11 +5,13 @@ removes real people from a real Telegram channel — so every transition goes
 through the domain state machine explicitly (never a direct jump to
 KICKED), and a ban is always immediately followed by an unban so
 KICKED -> ACTIVE (resubscribing later) stays possible. Nobody is left
-permanently banned.
+permanently banned. Channel administrators and the creator are never
+removed from the channel, full stop — see _is_protected_member.
 """
 import logging
 
 from aiogram import Bot
+from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramAPIError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -63,6 +65,34 @@ async def _advance_to_kicked(
     )
 
 
+_PROTECTED_STATUSES = frozenset(
+    {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}
+)
+
+
+async def _is_protected_member(bot: Bot, telegram_id: int) -> bool:
+    """True if telegram_id is currently an administrator or the creator of
+    CHANNEL_ID — those must never be auto-kicked from the channel.
+
+    Only called with CHANNEL_ID configured. A failure to check (e.g. the
+    lookup itself errors) is not treated as protection — it falls through to
+    the normal ban/unban attempt below, which has its own error handling.
+    """
+    try:
+        member = await bot.get_chat_member(
+            chat_id=settings.channel_id, user_id=telegram_id
+        )
+    except TelegramAPIError as exc:
+        logger.warning(
+            "Could not check membership status for telegram_id %s before "
+            "kicking — proceeding as a normal removal: %s",
+            telegram_id,
+            exc,
+        )
+        return False
+    return member.status in _PROTECTED_STATUSES
+
+
 async def _remove_from_channel(bot: Bot, telegram_id: int) -> None:
     if not settings.channel_id:
         logger.warning(
@@ -70,6 +100,20 @@ async def _remove_from_channel(bot: Bot, telegram_id: int) -> None:
             "telegram_id %s. The subscription is KICKED in the DB; remove "
             "this user from the channel manually.",
             telegram_id,
+        )
+        return
+
+    if await _is_protected_member(bot, telegram_id):
+        logger.warning(
+            "skipped kick for admin/creator telegram_id=%s", telegram_id
+        )
+        return
+
+    if settings.dry_run_kick:
+        logger.warning(
+            "DRY RUN: would kick telegram_id=%s from channel %s",
+            telegram_id,
+            settings.channel_id,
         )
         return
 
@@ -116,6 +160,13 @@ async def _kick_one(bot: Bot, subscription: Subscription) -> None:
         return
 
     await _remove_from_channel(bot, user.telegram_id)
+
+    if settings.dry_run_kick:
+        logger.warning(
+            "DRY RUN: would send access-removed DM to telegram_id=%s",
+            user.telegram_id,
+        )
+        return
 
     try:
         await bot.send_message(chat_id=user.telegram_id, text=_KICKED_TEXT)
