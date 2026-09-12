@@ -21,6 +21,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Stripe posts payment confirmations to this port; it must match
+    # WEBHOOK_PORT in .env (the app defaults to 8000 when unset).
+    ports:
+      - "${WEBHOOK_PORT:-8000}:${WEBHOOK_PORT:-8000}"
     depends_on:
       db:
         condition: service_healthy

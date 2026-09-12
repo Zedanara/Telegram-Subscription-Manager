@@ -5,6 +5,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import settings
 from app.handlers import router
+from app.web.stripe_webhook import run_webhook_server
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -19,7 +20,13 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Бот запущен")
 
-    await dp.start_polling(bot)
+    # Polling and the Stripe webhook server are both long-running; neither may
+    # block the other, so they share the loop. If either one dies the whole
+    # process should come down rather than keep half the payment flow alive.
+    await asyncio.gather(
+        dp.start_polling(bot),
+        run_webhook_server(bot),
+    )
 
 if __name__ == "__main__":
     try:
