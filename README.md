@@ -1,16 +1,84 @@
-# Telegram-Subscription-Manager
-A comprehensive Telegram bot built with Python to automate monthly paid subscriptions for private Telegram channels. Designed as a SaaS solution for content creators to manage their communities effortlessly.
+# Telegram Subscription Manager
 
-## 🛠️ Features
-* **Automated Access Management:** Automatically grants and revokes user access to private channels based on payment status.
-* **Payment Tracking System:** Tracks monthly subscription renewals and alerts the administrator.
-* **Admin Notifications:** Real-time notifications for the channel owner when a new payment is processed.
-* **Cycle Management:** Built-in logic to handle transitioning users to new private channels at the start of each billing cycle.
+A Telegram bot that manages paid access to a private channel. Subscribers pay
+through Stripe Checkout (card or BLIK) or a manual admin-confirmed transfer,
+get a single-use invite link on activation, and are warned and eventually
+removed automatically once their subscription expires.
 
-## 💻 Tech Stack
-* **Language:** Python 3.x
-* **Framework:** Aiogram
-* **Database:** PostgreSQL
+## How it works
 
-## 📌 Business Value
-This bot completely eliminates manual subscription tracking, saving content creators hours of administrative work each month and preventing revenue loss from expired subscriptions.
+One process runs three things concurrently:
+
+- **Bot polling** (aiogram v3) — the subscriber-facing conversation: pricing,
+  payment method choice, FSM for the manual-payment flow.
+- **A small aiohttp webhook server** — receives Stripe's
+  `checkout.session.completed` events, verifies their signature, and
+  activates the subscription. Idempotent under concurrent/duplicate
+  deliveries via a unique constraint on `(provider, provider_ref)`.
+- **APScheduler**, backed by a Postgres jobstore (so schedules survive a
+  container restart), running two daily jobs:
+  - an expiration-warning job that DMs subscribers a few days before
+    `expires_at` and moves them into an `EXPIRING` state;
+  - an auto-kick job that removes anyone actually past `expires_at` from the
+    channel — never a permanent ban (`ban` immediately followed by `unban`),
+    and channel administrators/the creator are never removed.
+
+Subscriptions move through an explicit state machine
+(`PENDING -> ACTIVE -> EXPIRING -> EXPIRED -> KICKED`, with `KICKED -> ACTIVE`
+on resubscribing) — see `app/domain/subscription.py`. Every transition goes
+through it; nothing sets `status` directly.
+
+## Tech stack
+
+- Python, [aiogram v3](https://docs.aiogram.dev/)
+- PostgreSQL, SQLAlchemy (async) + Alembic migrations
+- [Stripe](https://stripe.com/) Checkout + Webhooks (BLIK enabled)
+- [APScheduler](https://apscheduler.readthedocs.io/), `AsyncIOScheduler` with a
+  `SQLAlchemyJobStore`
+- Docker + docker-compose
+
+## Running locally
+
+1. Copy `.env.example` to `.env` and fill in real values (see below).
+2. Start everything:
+
+   ```
+   docker compose up --build
+   ```
+
+   This brings up Postgres and the bot/webhook/scheduler container. Migrations
+   are not run automatically — apply them once the db is up:
+
+   ```
+   docker compose exec bot python -m alembic upgrade head
+   ```
+
+3. Stripe webhooks need a public URL during local development — point
+   `stripe listen --forward-to localhost:<WEBHOOK_PORT>/webhook/stripe` at the
+   container (or use `stripe trigger` for a one-off test event), and put the
+   signing secret it prints into `STRIPE_WEBHOOK_SECRET`.
+
+## Environment variables
+
+All are read via `app/config.py` (typed, `pydantic-settings`); see
+`.env.example` for the authoritative, up-to-date list. In short:
+
+| Variable | Purpose |
+|---|---|
+| `BOT_TOKEN` | Telegram bot token from @BotFather |
+| `BOT_USERNAME` | Bot's `@username`, no leading `@` — used to build deep links |
+| `ADMIN_ID` | Telegram user id that receives admin notifications and can confirm manual payments |
+| `DATABASE_URL` | Optional full override; otherwise built from the `DB_*` vars below |
+| `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Postgres credentials (docker-compose db service) |
+| `DB_HOST`, `DB_PORT`, `DB_HOST_PORT` | Connection overrides — defaults match the docker-compose network |
+| `STRIPE_SECRET_KEY` | Stripe API secret key |
+| `STRIPE_WEBHOOK_SECRET` | Signs incoming Stripe webhooks; requests are refused while empty |
+| `CHANNEL_ID` | The private channel subscribers get invited to; invite/removal steps are skipped with a warning while unset |
+| `WEBHOOK_PORT` | Port the Stripe webhook server listens on |
+| `DRY_RUN_KICK` | When `true`, the auto-kick job logs what it would do instead of actually removing anyone or sending DMs — meant for observing the first production run safely |
+
+## Development notes
+
+This project's development has been AI-assisted (Claude Code), with commits
+reviewed and self-verified against the running stack before merge — see
+commit messages and PR history for the reasoning behind non-obvious changes.
