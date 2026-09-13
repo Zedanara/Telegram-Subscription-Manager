@@ -14,7 +14,7 @@ from app.config import settings
 from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
-from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed
+from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, pluralize_minutes_ru
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
 from app.services.stripe_service import create_checkout_session
@@ -328,10 +328,11 @@ async def receive_question(message: Message, state: FSMContext):
     db_user = await UserRepository.get_or_create(user.id)
     minutes_left = minutes_until_allowed(db_user.last_question_at, QUESTION_COOLDOWN)
     if minutes_left > 0:
+        minute_word = pluralize_minutes_ru(minutes_left)
         await message.answer(
             text=(
                 "Ты уже отправил(а) вопрос недавно — Ирина ответит в ближайшее время 💫\n\n"
-                f"Следующий вопрос можно будет отправить через {minutes_left} минут."
+                f"Следующий вопрос можно будет отправить через {minutes_left} {minute_word}."
             ),
             reply_markup=kb.main_menu
         )
