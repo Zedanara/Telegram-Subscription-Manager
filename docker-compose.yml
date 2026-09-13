@@ -27,6 +27,11 @@ services:
     # lets sibling containers reach this port without it.
     expose:
       - "${WEBHOOK_PORT:-8000}"
+    volumes:
+      # Content for "Посмотреть примеры контента" — uploaded straight to the
+      # host, never committed (see media/examples/README.md). Read-only from
+      # the bot's side so a compromised container can't write into it.
+      - ./media/examples:/app/media/examples:ro
     depends_on:
       db:
         condition: service_healthy
