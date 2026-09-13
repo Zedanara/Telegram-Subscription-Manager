@@ -14,7 +14,7 @@ from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
 from app.domain.subscription import InvalidTransitionError
-from app.domain.time import utcnow
+from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
 from app.services.stripe_service import create_checkout_session
 
 router = Router()
@@ -104,6 +104,40 @@ async def show_payment(callback: CallbackQuery):
         "✨ После оплаты отправь скрин в этот чат, и я активирую доступ вручную в течение дня."
     )
     await callback.message.edit_text(text, reply_markup=kb.get_payment_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == 'my_subscription')
+async def show_my_subscription(callback: CallbackQuery):
+    """Показать статус подписки пользователя"""
+    db_user = await UserRepository.get_by_telegram_id(callback.from_user.id)
+    subscription = (
+        await SubscriptionRepository.get_active_or_expiring_for_user(db_user.id)
+        if db_user is not None
+        else None
+    )
+
+    if subscription is None:
+        text = (
+            "У тебя пока нет подписки 🌸\n\n"
+            "Загляни в раздел «💳 Оформить подписку» в меню, чтобы получить "
+            "доступ в закрытый клуб."
+        )
+    else:
+        days = days_remaining(subscription.expires_at)
+        date_str = format_date_ru(subscription.expires_at)
+        day_word = pluralize_days_ru(days)
+        if subscription.status == SubscriptionStatus.EXPIRING:
+            text = (
+                f"⏳ Твоя подписка скоро закончится — осталось {days} {day_word} "
+                f"(до {date_str}).\n\n"
+                "Продли доступ через «💳 Оформить подписку», чтобы не потерять "
+                "место в закрытом клубе 💫"
+            )
+        else:
+            text = f"✅ Твоя подписка активна ещё {days} {day_word} (до {date_str})."
+
+    await callback.message.edit_text(text, reply_markup=kb.back_menu)
     await callback.answer()
 
 
