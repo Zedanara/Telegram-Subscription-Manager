@@ -20,6 +20,7 @@ main = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='💳 Подписка
 main_menu = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text='📦 Что внутри', callback_data='what_is_inside')],
     [InlineKeyboardButton(text='💳 Оформить подписку', callback_data='payment')],
+    [InlineKeyboardButton(text='📅 Моя подписка', callback_data='my_subscription')],
     [InlineKeyboardButton(text='💬 Задать вопрос Ирине', callback_data='ask_question')]
 ])
 

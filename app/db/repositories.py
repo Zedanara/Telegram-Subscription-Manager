@@ -134,6 +134,23 @@ class SubscriptionRepository:
             return result.scalars().first()
 
     @staticmethod
+    async def get_active_or_expiring_for_user(
+        user_id: int, session: AsyncSession | None = None
+    ) -> Subscription | None:
+        async with _session_scope(session) as (db, _):
+            result = await db.execute(
+                select(Subscription)
+                .where(
+                    Subscription.user_id == user_id,
+                    Subscription.status.in_(
+                        [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRING]
+                    ),
+                )
+                .order_by(Subscription.created_at.desc())
+            )
+            return result.scalars().first()
+
+    @staticmethod
     async def create(
         user_id: int,
         expires_at: datetime | None,
