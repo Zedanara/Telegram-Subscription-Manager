@@ -12,3 +12,8 @@ __pycache__/
 .DS_Store
 .claude
 CLAUDE.md
+
+# Example content is uploaded straight to the server, never committed —
+# see media/examples/README.md for the naming convention.
+media/examples/*
+!media/examples/README.md
