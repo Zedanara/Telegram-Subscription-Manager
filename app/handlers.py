@@ -1,12 +1,13 @@
 import asyncio
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 import app.keyboards as kb
 from app.config import settings
@@ -83,15 +84,51 @@ async def show_inside_info_callback(callback: CallbackQuery):
     await callback.answer()
 
 
+# Examples are uploaded straight to the server (see media/examples/README.md)
+# so content updates never need a code change or rebuild.
+EXAMPLES_DIR = Path("/app/media/examples")
+_MAX_EXAMPLES = 5
+_EXAMPLE_EXTENSIONS = {".jpg": "photo", ".mp4": "video"}
+
+_NO_EXAMPLES_TEXT = (
+    "👀 Вот примеры контента из закрытого клуба:\n\n"
+    "📸 Здесь ты увидишь стильные подборки, разборы образов и капсульные гардеробы\n\n"
+    "💡 В реальной версии здесь будут фото и видео примеры"
+)
+
+
+def _find_example_media(examples_dir: Path) -> list[tuple[str, Path]]:
+    """(kind, path) for every example_<n>.<ext> file that exists, in numeric
+    order (n = 1..5); within the same n, photo before video. Missing files
+    (either index or extension) are skipped silently."""
+    items = []
+    for index in range(1, _MAX_EXAMPLES + 1):
+        for ext, kind in _EXAMPLE_EXTENSIONS.items():
+            file_path = examples_dir / f"example_{index}{ext}"
+            if file_path.is_file():
+                items.append((kind, file_path))
+    return items
+
+
 @router.callback_query(F.data == 'examples')
 async def show_examples(callback: CallbackQuery):
     """Показать примеры контента"""
-    text = (
-        "👀 Вот примеры контента из закрытого клуба:\n\n"
-        "📸 Здесь ты увидишь стильные подборки, разборы образов и капсульные гардеробы\n\n"
-        "💡 В реальной версии здесь будут фото и видео примеры"
-    )
-    await callback.message.answer(text, reply_markup=kb.back_menu)
+    items = _find_example_media(EXAMPLES_DIR)
+
+    if not items:
+        await callback.message.answer(_NO_EXAMPLES_TEXT, reply_markup=kb.back_menu)
+        await callback.answer("Примеры отправлены!")
+        return
+
+    last_index = len(items) - 1
+    for index, (kind, file_path) in enumerate(items):
+        media = FSInputFile(file_path)
+        markup = kb.back_menu if index == last_index else None
+        if kind == "photo":
+            await callback.message.answer_photo(media, reply_markup=markup)
+        else:
+            await callback.message.answer_video(media, reply_markup=markup)
+
     await callback.answer("Примеры отправлены!")
 
 
