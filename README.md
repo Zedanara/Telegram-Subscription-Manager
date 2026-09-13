@@ -28,6 +28,11 @@ Subscriptions move through an explicit state machine
 on resubscribing) — see `app/domain/subscription.py`. Every transition goes
 through it; nothing sets `status` directly.
 
+In front of that process, a **Caddy** reverse proxy (its own container) is
+the only thing exposed to the internet — it terminates HTTPS automatically
+via Let's Encrypt and forwards everything to the bot's webhook port over the
+Docker network. See [HTTPS in production](#https-in-production-caddy) below.
+
 ## Tech stack
 
 - Python, [aiogram v3](https://docs.aiogram.dev/)
@@ -58,6 +63,30 @@ through it; nothing sets `status` directly.
    container (or use `stripe trigger` for a one-off test event), and put the
    signing secret it prints into `STRIPE_WEBHOOK_SECRET`.
 
+   Note: since Caddy became the only public entry point, the bot's webhook
+   port is no longer published to the host, so `localhost:<WEBHOOK_PORT>`
+   above won't resolve as-is. Either add a temporary
+   `docker-compose.override.yml` republishing that port for local testing,
+   or run `python main.py` directly on the host against the dockerized `db`
+   (with `DB_HOST=localhost`) instead of through docker-compose.
+
+## HTTPS in production (Caddy)
+
+The real server is reached at a free [sslip.io](https://sslip.io) hostname
+that resolves straight to its public IP — no domain purchase or DNS setup
+needed. sslip.io accepts either the dotted (`A.B.C.D.sslip.io`) or
+hyphenated (`A-B-C-D.sslip.io`) form of the IP; both resolve to the same
+address, so if the server's IP ever changes, update the `Caddyfile`'s
+hostname to match the new IP in whichever form is convenient.
+
+Caddy (`caddy:2-alpine`) is the only container publishing ports 80/443; it
+terminates HTTPS via automatic Let's Encrypt issuance and reverse-proxies
+everything to `bot:8000` over the Docker network. Certificate/account state
+lives in a named volume (`caddy_data`) so a restart doesn't re-issue.
+Real issuance can only be confirmed once deployed to the actual public
+server — ports 80/443 need to be reachable from the internet for Let's
+Encrypt's HTTP-01 challenge to succeed, which no local environment provides.
+
 ## Environment variables
 
 All are read via `app/config.py` (typed, `pydantic-settings`); see
@@ -74,7 +103,8 @@ All are read via `app/config.py` (typed, `pydantic-settings`); see
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
 | `STRIPE_WEBHOOK_SECRET` | Signs incoming Stripe webhooks; requests are refused while empty |
 | `CHANNEL_ID` | The private channel subscribers get invited to; invite/removal steps are skipped with a warning while unset |
-| `WEBHOOK_PORT` | Port the Stripe webhook server listens on |
+| `WEBHOOK_PORT` | Port the Stripe webhook server listens on inside the container. Not published to the host — Caddy is the only public entry point (see below) |
+| `WEBHOOK_HOST` | Interface the webhook server binds to inside the container; leave as `0.0.0.0` so Caddy can reach it over the Docker network |
 | `DRY_RUN_KICK` | When `true`, the auto-kick job logs what it would do instead of actually removing anyone or sending DMs — meant for observing the first production run safely |
 
 ## Development notes
