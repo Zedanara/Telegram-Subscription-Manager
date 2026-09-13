@@ -387,5 +387,12 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
         "— советами, как перестать тратить деньги на \"висящую\" одежду\n\n"
         "💌 Нажми кнопку ниже, чтобы узнать, что тебя ждёт внутри 👇"
     )
-    await callback.message.edit_text(text, reply_markup=kb.main_menu)
+    if callback.message.photo or callback.message.video:
+        # editMessageText rejects photo/video messages (Telegram only allows
+        # edit_caption/edit_media there) — this "Назад в меню" is shared by
+        # every menu, including the media messages from show_examples, so
+        # send the menu as a new message instead of trying to edit those.
+        await callback.message.answer(text, reply_markup=kb.main_menu)
+    else:
+        await callback.message.edit_text(text, reply_markup=kb.main_menu)
     await callback.answer()
