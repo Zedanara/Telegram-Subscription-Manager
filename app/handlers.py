@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
 from app.domain.pricing import get_current_price
+from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, pluralize_minutes_ru
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
 from app.services.stripe_service import create_checkout_session
@@ -323,8 +324,21 @@ async def ask_question(callback: CallbackQuery, state: FSMContext):
 async def receive_question(message: Message, state: FSMContext):
     """Получить вопрос от пользователя"""
     user = message.from_user
-    
-    
+
+    db_user = await UserRepository.get_or_create(user.id)
+    minutes_left = minutes_until_allowed(db_user.last_question_at, QUESTION_COOLDOWN)
+    if minutes_left > 0:
+        minute_word = pluralize_minutes_ru(minutes_left)
+        await message.answer(
+            text=(
+                "Ты уже отправил(а) вопрос недавно — Ирина ответит в ближайшее время 💫\n\n"
+                f"Следующий вопрос можно будет отправить через {minutes_left} {minute_word}."
+            ),
+            reply_markup=kb.main_menu
+        )
+        await state.clear()
+        return
+
     admin_message = (
         f"💬 Новый вопрос!\n\n"
         f"👤 От: {user.full_name}\n"
@@ -332,7 +346,7 @@ async def receive_question(message: Message, state: FSMContext):
         f"📱 Username: @{user.username if user.username else 'не указан'}\n\n"
         f"❓ Вопрос:\n{message.text}"
     )
-    
+
     try:
         await message.bot.send_message(
             chat_id=ADMIN_ID,
@@ -340,12 +354,14 @@ async def receive_question(message: Message, state: FSMContext):
         )
     except Exception as e:
         print(f"Ошибка отправки админу: {e}")
-    
+
+    await UserRepository.set_last_question_at(db_user.id, utcnow())
+
     await message.answer(
         text="✅ Спасибо за вопрос! Ирина получила твоё сообщение и ответит в ближайшее время 💌",
         reply_markup=kb.main_menu
     )
-    
+
     await state.clear()
 
 

@@ -116,6 +116,22 @@ class UserRepository:
         async with _session_scope(session) as (db, _):
             return await db.get(User, user_id)
 
+    @staticmethod
+    async def set_last_question_at(
+        user_id: int, when: datetime, session: AsyncSession | None = None
+    ) -> User:
+        async with _session_scope(session) as (db, owned):
+            user = await db.get(User, user_id)
+            if user is None:
+                raise ValueError(f"User {user_id} not found")
+            user.last_question_at = when
+            if owned:
+                await db.commit()
+                await db.refresh(user)
+            else:
+                await db.flush()
+            return user
+
 
 class SubscriptionRepository:
     @staticmethod
