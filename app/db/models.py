@@ -26,6 +26,12 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # When this user's last question was forwarded to ADMIN_ID — drives the
+    # "Задать вопрос" rate limit (app/domain/rate_limit.py). Null means never
+    # asked, which always passes the limit.
+    last_question_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user")
 
