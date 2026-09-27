@@ -23,6 +23,19 @@ jobs:
 
       # No Postgres service needed: the suite runs against plain in-memory
       # objects (the state machine tests) and an in-memory SQLite fixture
-      # (tests/conftest.py) rather than a real Postgres instance.
+      # (tests/conftest.py) rather than a real Postgres instance. The env
+      # vars below are dummy values, not secrets: app/config.py's Settings
+      # requires bot_token/bot_username/admin_id with no defaults, and
+      # app/db/session.py builds its engine from database_url at import
+      # time — so importing app.handlers (which several test modules do)
+      # crashes at collection with no .env file unless *something* is set,
+      # even though no real Telegram or Postgres connection is ever made.
       - name: Test (pytest)
         run: pytest
+        env:
+          BOT_TOKEN: "0:CI-DUMMY-TOKEN"
+          BOT_USERNAME: "ci_dummy_bot"
+          ADMIN_ID: "1"
+          DB_USER: "ci"
+          DB_PASSWORD: "ci"
+          DB_NAME: "ci"
