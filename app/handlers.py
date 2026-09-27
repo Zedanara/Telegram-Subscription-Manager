@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -307,8 +307,10 @@ async def confirm_payment(callback: CallbackQuery):
 
 
 _ACTIVATE_USAGE = (
-    "Использование: перешли этому боту любое сообщение от клиента, затем "
-    "ответь на пересланное сообщение командой /activate."
+    "Использование:\n"
+    "• Перешли этому боту любое сообщение от клиента и ответь на пересланное "
+    "сообщение командой /activate\n"
+    "• Или, если telegram_id уже известен: /activate 123456789"
 )
 
 
@@ -331,49 +333,69 @@ def _resolve_forwarded_sender(forwarded: Message) -> tuple[int, str] | None:
     return user.id, display_name
 
 
+def _resolve_target(message: Message, raw_args: str) -> tuple[int, str] | str:
+    """(telegram_id, display name) to activate, or an error string to send
+    back to the admin as-is.
+
+    /activate <telegram_id> is the fallback for when the client has hidden
+    forward attribution in their privacy settings (confirmed live: a real
+    Telegram account with "Forwarded Messages" restricted produces a
+    MessageOriginHiddenUser with no id at all, not just a missing username) —
+    an admin who already has the id some other way (e.g. @userinfobot) can
+    skip forwarding entirely.
+    """
+    args = raw_args.strip()
+    if args:
+        if not args.lstrip('-').isdigit():
+            return f"❌ /activate ожидает числовой telegram_id, например /activate 123456789.\n\n{_ACTIVATE_USAGE}"
+        telegram_id = int(args)
+        return telegram_id, f"id {telegram_id}"
+
+    forwarded = message.reply_to_message
+    if forwarded is None:
+        return _ACTIVATE_USAGE
+
+    origin = forwarded.forward_origin
+    if origin is None:
+        return f"❌ Это не пересланное сообщение.\n\n{_ACTIVATE_USAGE}"
+
+    if isinstance(origin, MessageOriginHiddenUser):
+        return (
+            f"❌ У {origin.sender_user_name} в настройках приватности скрыта "
+            "пересылка — Telegram не даёт узнать его id таким способом.\n\n"
+            "Узнай его telegram_id другим способом (например, через "
+            "@userinfobot) и используй /activate <telegram_id>."
+        )
+
+    resolved = _resolve_forwarded_sender(forwarded)
+    if resolved is None:
+        return (
+            "❌ Это сообщение переслано не от пользователя (а от чата или "
+            "канала) — не могу определить, кого активировать."
+        )
+
+    return resolved
+
+
 @router.message(Command('activate'))
-async def admin_activate(message: Message):
+async def admin_activate(message: Message, command: CommandObject):
     """Админ вручную активирует подписку клиенту, оплатившему мимо Stripe
     (банковский перевод, недоступный Stripe способ оплаты и т.п.) — у такого
     клиента иначе не появится ни User, ни Subscription, ни Payment.
 
     Использование: переслать боту сообщение от клиента и ответить на него
-    командой /activate. Молча игнорируется для не-админа, как и остальные
-    админ-действия в этом файле.
+    командой /activate, либо /activate <telegram_id> напрямую. Молча
+    игнорируется для не-админа, как и остальные админ-действия в этом файле.
     """
     if message.from_user.id != ADMIN_ID:
         return
 
-    forwarded = message.reply_to_message
-    if forwarded is None:
-        await message.answer(_ACTIVATE_USAGE)
+    target = _resolve_target(message, command.args or "")
+    if isinstance(target, str):
+        await message.answer(target)
         return
 
-    origin = forwarded.forward_origin
-    if origin is None:
-        await message.answer(
-            "❌ Это не пересланное сообщение.\n\n" + _ACTIVATE_USAGE
-        )
-        return
-
-    if isinstance(origin, MessageOriginHiddenUser):
-        await message.answer(
-            f"❌ У {origin.sender_user_name} в настройках приватности скрыта "
-            "пересылка — Telegram не даёт узнать его id таким способом.\n\n"
-            "Попроси клиента написать боту напрямую (/start), либо узнай его "
-            "telegram_id другим способом."
-        )
-        return
-
-    resolved = _resolve_forwarded_sender(forwarded)
-    if resolved is None:
-        await message.answer(
-            "❌ Это сообщение переслано не от пользователя (а от чата или "
-            "канала) — не могу определить, кого активировать."
-        )
-        return
-
-    telegram_id, display_name = resolved
+    telegram_id, display_name = target
 
     subscription = await activate_manual_admin_grant(telegram_id)
     if subscription is None:
