@@ -224,9 +224,21 @@ async def request_screenshot(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(ScreenshotState.waiting_for_screenshot, F.photo)
+@router.message(
+    ScreenshotState.waiting_for_screenshot,
+    F.photo | F.document.mime_type.startswith("image/"),
+)
 async def receive_screenshot(message: Message, state: FSMContext):
-    """Получить скриншот от пользователя"""
+    """Получить скриншот от пользователя.
+
+    Screenshots can arrive as a compressed message.photo OR as an
+    uncompressed message.document — some clients (notably Telegram Desktop's
+    "send without compression") deliver a genuine screenshot as a document
+    with an image mime type, which message.photo never populates. Missing
+    that case was a real bug: a real bank-transfer screenshot sent this way
+    got the generic "please send an actual photo" rejection even though it
+    plainly was one.
+    """
     user = message.from_user
 
     db_user = await UserRepository.get_or_create(user.id)
@@ -249,14 +261,23 @@ async def receive_screenshot(message: Message, state: FSMContext):
         f"🆔 ID: {user.id}\n"
         f"📱 Username: @{user.username if user.username else 'не указан'}"
     )
+    confirm_keyboard = kb.get_confirm_payment_keyboard(subscription.id)
 
     try:
-        await message.bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=message.photo[-1].file_id,
-            caption=caption,
-            reply_markup=kb.get_confirm_payment_keyboard(subscription.id)
-        )
+        if message.photo:
+            await message.bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=message.photo[-1].file_id,
+                caption=caption,
+                reply_markup=confirm_keyboard,
+            )
+        else:
+            await message.bot.send_document(
+                chat_id=ADMIN_ID,
+                document=message.document.file_id,
+                caption=caption,
+                reply_markup=confirm_keyboard,
+            )
     except Exception as e:
         print(f"Ошибка отправки админу: {e}")
 
