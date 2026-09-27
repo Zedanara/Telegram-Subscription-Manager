@@ -4,10 +4,16 @@ from decimal import Decimal
 from pathlib import Path
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    Message,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+)
 
 import app.keyboards as kb
 from app.config import settings
@@ -17,6 +23,8 @@ from app.domain.pricing import get_current_price
 from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, pluralize_minutes_ru
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
+from app.services.channel_access import confirm_and_grant_access
+from app.services.payment_service import activate_manual_admin_grant
 from app.services.stripe_service import create_checkout_session
 
 router = Router()
@@ -296,6 +304,117 @@ async def confirm_payment(callback: CallbackQuery):
         reply_markup=None
     )
     await callback.answer("Подписка активирована")
+
+
+_ACTIVATE_USAGE = (
+    "Использование:\n"
+    "• Перешли этому боту любое сообщение от клиента и ответь на пересланное "
+    "сообщение командой /activate\n"
+    "• Или, если telegram_id уже известен: /activate 123456789"
+)
+
+
+def _resolve_forwarded_sender(forwarded: Message) -> tuple[int, str] | None:
+    """(telegram_id, display name) of who a forwarded message originally
+    came from, or None when it can't be resolved.
+
+    bot.get_chat(username) cannot be used for this — Telegram's Bot API only
+    resolves @usernames for channels/supergroups/bots, never for private
+    user accounts, even ones that have messaged the bot before (confirmed
+    live against the Bot API, not just aiogram). A forwarded message is the
+    one reliable way a bot learns a private user's numeric id from someone
+    who never went through checkout.
+    """
+    origin = forwarded.forward_origin
+    if not isinstance(origin, MessageOriginUser):
+        return None
+    user = origin.sender_user
+    display_name = f"@{user.username}" if user.username else user.full_name
+    return user.id, display_name
+
+
+def _resolve_target(message: Message, raw_args: str) -> tuple[int, str] | str:
+    """(telegram_id, display name) to activate, or an error string to send
+    back to the admin as-is.
+
+    /activate <telegram_id> is the fallback for when the client has hidden
+    forward attribution in their privacy settings (confirmed live: a real
+    Telegram account with "Forwarded Messages" restricted produces a
+    MessageOriginHiddenUser with no id at all, not just a missing username) —
+    an admin who already has the id some other way (e.g. @userinfobot) can
+    skip forwarding entirely.
+    """
+    args = raw_args.strip()
+    if args:
+        if not args.lstrip('-').isdigit():
+            return f"❌ /activate ожидает числовой telegram_id, например /activate 123456789.\n\n{_ACTIVATE_USAGE}"
+        telegram_id = int(args)
+        return telegram_id, f"id {telegram_id}"
+
+    forwarded = message.reply_to_message
+    if forwarded is None:
+        return _ACTIVATE_USAGE
+
+    origin = forwarded.forward_origin
+    if origin is None:
+        return f"❌ Это не пересланное сообщение.\n\n{_ACTIVATE_USAGE}"
+
+    if isinstance(origin, MessageOriginHiddenUser):
+        return (
+            f"❌ У {origin.sender_user_name} в настройках приватности скрыта "
+            "пересылка — Telegram не даёт узнать его id таким способом.\n\n"
+            "Узнай его telegram_id другим способом (например, через "
+            "@userinfobot) и используй /activate <telegram_id>."
+        )
+
+    resolved = _resolve_forwarded_sender(forwarded)
+    if resolved is None:
+        return (
+            "❌ Это сообщение переслано не от пользователя (а от чата или "
+            "канала) — не могу определить, кого активировать."
+        )
+
+    return resolved
+
+
+@router.message(Command('activate'))
+async def admin_activate(message: Message, command: CommandObject):
+    """Админ вручную активирует подписку клиенту, оплатившему мимо Stripe
+    (банковский перевод, недоступный Stripe способ оплаты и т.п.) — у такого
+    клиента иначе не появится ни User, ни Subscription, ни Payment.
+
+    Использование: переслать боту сообщение от клиента и ответить на него
+    командой /activate, либо /activate <telegram_id> напрямую. Молча
+    игнорируется для не-админа, как и остальные админ-действия в этом файле.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    target = _resolve_target(message, command.args or "")
+    if isinstance(target, str):
+        await message.answer(target)
+        return
+
+    telegram_id, display_name = target
+
+    subscription = await activate_manual_admin_grant(telegram_id)
+    if subscription is None:
+        # Extremely unlikely (a fresh uuid4 provider_ref colliding), but the
+        # shared activation function's contract allows it — treat it the same
+        # way the webhook does: something else already recorded this.
+        await message.answer(
+            f"⚠️ Активация для {display_name} (id {telegram_id}) уже была "
+            "выполнена параллельно."
+        )
+        return
+
+    await confirm_and_grant_access(message.bot, telegram_id)
+
+    expires_str = subscription.expires_at.strftime("%Y-%m-%d")
+    await message.answer(
+        f"✅ Активировано вручную: {display_name} (telegram_id {telegram_id})\n"
+        f"Подписка активна до {expires_str}."
+    )
 
 
 @router.message(ScreenshotState.waiting_for_screenshot)

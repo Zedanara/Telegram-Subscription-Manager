@@ -7,6 +7,7 @@ logic can be driven from anywhere later (retry job, admin tooling).
 import logging
 from datetime import timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,12 +19,17 @@ from app.db.repositories import (
     UserRepository,
 )
 from app.db.session import get_session
+from app.domain.pricing import get_current_price
 from app.domain.time import utcnow
 
 logger = logging.getLogger(__name__)
 
 # Value stored in payments.provider; also the idempotency key namespace.
 PROVIDER = "stripe"
+
+# Same namespace, for activations an admin grants by hand (bank transfer,
+# non-EU payment rails Stripe can't support, etc.) instead of through Stripe.
+PROVIDER_MANUAL_ADMIN = "manual_admin"
 
 SUBSCRIPTION_DAYS = 30
 
@@ -42,21 +48,25 @@ async def _find_or_create_subscription(
     )
 
 
-async def activate_paid_checkout(
+async def _activate_subscription(
     telegram_id: int,
-    session_id: str,
+    provider: str,
+    provider_ref: str,
     amount: Decimal,
     currency: str,
 ) -> Subscription | None:
-    """Record the payment and activate the payer's subscription for 30 days.
+    """Record a payment and activate the payer's subscription for 30 days.
+
+    The single place every activation path — the Stripe webhook, the admin's
+    manual-grant command — goes through, so they can never drift apart.
 
     Everything happens in one transaction: the user, the subscription, the
     Payment row and the ACTIVE transition either all commit or none do, so a
     failure can never leave a recorded payment with no access behind it.
 
     Returns the activated Subscription, or None when another concurrent
-    delivery of the same checkout session already recorded it — the unique
-    constraint on (provider, provider_ref) is what makes that safe.
+    delivery of the same (provider, provider_ref) already recorded it — the
+    unique constraint on that pair is what makes this safe.
     """
     async with get_session() as db:
         try:
@@ -66,16 +76,13 @@ async def activate_paid_checkout(
 
                 payment = await PaymentRepository.create(
                     subscription_id=subscription.id,
-                    provider=PROVIDER,
-                    provider_ref=session_id,
+                    provider=provider,
+                    provider_ref=provider_ref,
                     amount=amount,
                     currency=currency,
                     session=db,
                 )
 
-                # Exactly the call the admin manual-confirm flow makes, so
-                # app/domain/subscription.py stays the single place
-                # transitions are decided.
                 expires_at = utcnow() + timedelta(days=SUBSCRIPTION_DAYS)
                 await SubscriptionRepository.update_status(
                     subscription.id,
@@ -89,20 +96,51 @@ async def activate_paid_checkout(
             # A concurrent delivery inserted first; its transaction owns the
             # activation and ours rolled back cleanly. Nothing to do.
             logger.info(
-                "Checkout session %s was recorded concurrently — "
-                "this delivery activated nothing",
-                session_id,
+                "Payment %s:%s was recorded concurrently — this call activated nothing",
+                provider,
+                provider_ref,
             )
             return None
 
     logger.info(
-        "Payment %s (%s %s, session %s) activated subscription %s for telegram_id %s until %s",
+        "Payment %s (%s %s, %s:%s) activated subscription %s for telegram_id %s until %s",
         payment_id,
         amount,
         currency,
-        session_id,
+        provider,
+        provider_ref,
         subscription_id,
         telegram_id,
         expires_at,
     )
     return subscription
+
+
+async def activate_paid_checkout(
+    telegram_id: int,
+    session_id: str,
+    amount: Decimal,
+    currency: str,
+) -> Subscription | None:
+    """Activate a subscription paid for through Stripe Checkout.
+
+    Returns the activated Subscription, or None when another concurrent
+    delivery of the same checkout session already recorded it.
+    """
+    return await _activate_subscription(telegram_id, PROVIDER, session_id, amount, currency)
+
+
+async def activate_manual_admin_grant(telegram_id: int) -> Subscription | None:
+    """Activate a subscription for a client who paid outside Stripe entirely
+    (bank transfer, a payment rail Stripe can't support) and whom an admin is
+    granting access to by hand — see app/handlers.py's /activate command.
+
+    provider_ref is a fresh uuid4 per call, so repeated activations for the
+    same client never collide against the (provider, provider_ref) unique
+    constraint the way replaying the same Stripe session id would.
+    """
+    provider_ref = f"manual-admin-{uuid4()}"
+    amount = Decimal(get_current_price())
+    return await _activate_subscription(
+        telegram_id, PROVIDER_MANUAL_ADMIN, provider_ref, amount, "PLN"
+    )
