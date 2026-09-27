@@ -4,7 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, Message
@@ -17,6 +18,8 @@ from app.domain.pricing import get_current_price
 from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, pluralize_minutes_ru
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
+from app.services.channel_access import confirm_and_grant_access
+from app.services.payment_service import activate_manual_admin_grant
 from app.services.stripe_service import create_checkout_session
 
 router = Router()
@@ -296,6 +299,54 @@ async def confirm_payment(callback: CallbackQuery):
         reply_markup=None
     )
     await callback.answer("Подписка активирована")
+
+
+@router.message(Command('activate'))
+async def admin_activate(message: Message, command: CommandObject):
+    """Админ вручную активирует подписку клиенту, оплатившему мимо Stripe
+    (банковский перевод, недоступный Stripe способ оплаты и т.п.) — у такого
+    клиента иначе не появится ни User, ни Subscription, ни Payment.
+
+    Использование: /activate @username. Молча игнорируется для не-админа,
+    как и остальные админ-действия в этом файле.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    username = (command.args or "").strip().lstrip('@')
+    if not username:
+        await message.answer("Использование: /activate @username")
+        return
+
+    try:
+        chat = await message.bot.get_chat(f"@{username}")
+    except TelegramAPIError as exc:
+        await message.answer(
+            f"❌ Не удалось найти @{username}: {exc.message}\n\n"
+            "Возможно: опечатка в юзернейме, закрытый профиль, или человек "
+            "никогда не писал этому боту."
+        )
+        return
+
+    telegram_id = chat.id
+
+    subscription = await activate_manual_admin_grant(telegram_id)
+    if subscription is None:
+        # Extremely unlikely (a fresh uuid4 provider_ref colliding), but the
+        # shared activation function's contract allows it — treat it the same
+        # way the webhook does: something else already recorded this.
+        await message.answer(
+            f"⚠️ Активация для @{username} (id {telegram_id}) уже была выполнена параллельно."
+        )
+        return
+
+    await confirm_and_grant_access(message.bot, telegram_id)
+
+    expires_str = subscription.expires_at.strftime("%Y-%m-%d")
+    await message.answer(
+        f"✅ Активировано вручную: @{username} (telegram_id {telegram_id})\n"
+        f"Подписка активна до {expires_str}."
+    )
 
 
 @router.message(ScreenshotState.waiting_for_screenshot)
