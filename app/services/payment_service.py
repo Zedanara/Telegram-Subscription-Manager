@@ -20,6 +20,7 @@ from app.db.repositories import (
 )
 from app.db.session import get_session
 from app.domain.pricing import get_current_price
+from app.domain.subscription import InvalidTransitionError
 from app.domain.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -214,18 +215,37 @@ async def confirm_manual_payment(pending_subscription_id: int) -> Subscription:
     ACTIVE) or a new delete code path. Otherwise the placeholder itself is
     activated, same as before this existed.
 
+    Idempotent against a double-tap or a retried callback: the placeholder
+    row is locked (SELECT ... FOR UPDATE, on Postgres — SQLite has no real
+    row locking, see get_by_id) for the rest of this transaction, and
+    processing proceeds only if it is still PENDING and still owns the
+    Payment created for it at screenshot time. Either one having changed
+    means an earlier call already handled this exact payment — the
+    placeholder was activated directly (no longer PENDING), or its Payment
+    was already re-pointed onto a live subscription (no Payment points at
+    it anymore). That raises InvalidTransitionError even though PENDING ->
+    ACTIVE would otherwise be a perfectly valid transition: it is reused
+    deliberately here so the caller's existing "already processed" handling
+    (app/handlers.py's confirm_payment) covers this case too, unchanged.
+
     Raises ValueError if pending_subscription_id does not exist, and
     InvalidTransitionError (app.domain.subscription) if the target
-    subscription can no longer move to ACTIVE — both pre-existing
-    possibilities the caller already handles.
+    subscription can no longer move to ACTIVE or this payment was already
+    processed — both possibilities the caller already handles.
     """
     async with get_session() as db:
         async with db.begin():
             pending = await SubscriptionRepository.get_by_id(
-                pending_subscription_id, session=db
+                pending_subscription_id, session=db, for_update=True
             )
             if pending is None:
                 raise ValueError(f"Subscription {pending_subscription_id} not found")
+
+            payment = await PaymentRepository.get_for_subscription(
+                pending.id, session=db
+            )
+            if pending.status != SubscriptionStatus.PENDING or payment is None:
+                raise InvalidTransitionError(pending.status, SubscriptionStatus.ACTIVE)
 
             live = await SubscriptionRepository.get_active_or_expiring_for_user(
                 pending.user_id, session=db
