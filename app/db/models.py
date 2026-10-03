@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -47,6 +47,17 @@ class Subscription(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # How many days-left the most recently *sent* expiration reminder warned
+    # about (app/jobs/expiration_warnings.py) — NULL means no reminder sent
+    # this cycle. Needed because that job now sends up to three reminders
+    # (3/2/1 days left) per cycle, so the ACTIVE->EXPIRING status transition
+    # alone can no longer tell "already warned today" apart from "already
+    # warned on a different day of the same window". Reset to NULL on every
+    # renewal (app/services/payment_service.py) so the next cycle gets all
+    # three reminders again.
+    last_warning_days_left: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
