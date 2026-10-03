@@ -25,7 +25,7 @@ from app.domain.pricing import get_current_price
 from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, pluralize_minutes_ru
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
-from app.services.channel_access import confirm_and_grant_access
+from app.services.channel_access import _create_invite_link, confirm_and_grant_access
 from app.services.payment_service import activate_manual_admin_grant
 from app.services.stripe_service import create_checkout_session
 
@@ -566,6 +566,71 @@ async def admin_subscribers(message: Message):
 
     for chunk in _split_into_chunks(lines):
         await message.answer(chunk)
+
+
+_INVITE_USAGE = "Использование: /invite <telegram_id>"
+
+
+@router.message(Command('invite'))
+async def admin_invite(message: Message, command: CommandObject):
+    """Админ пересылает платящему подписчику свежую одноразовую ссылку на
+    канал — для легаси-подписчиков, кто оплатил, но так и не получил (или
+    потерял) приглашение. Не создаёт Payment и не трогает Subscription —
+    только ссылка; отказывает, если у пользователя нет ACTIVE/EXPIRING
+    подписки. Молча игнорируется для не-админа.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    args = (command.args or "").strip()
+    if not args.lstrip('-').isdigit():
+        await message.answer(f"❌ /invite ожидает числовой telegram_id.\n\n{_INVITE_USAGE}")
+        return
+    telegram_id = int(args)
+
+    db_user = await UserRepository.get_by_telegram_id(telegram_id)
+    subscription = (
+        await SubscriptionRepository.get_active_or_expiring_for_user(db_user.id)
+        if db_user is not None
+        else None
+    )
+    if subscription is None:
+        await message.answer(
+            f"❌ У telegram_id {telegram_id} нет активной подписки (ACTIVE/EXPIRING) "
+            "— ссылка не отправлена."
+        )
+        return
+
+    if not settings.channel_id:
+        await message.answer("⚠️ CHANNEL_ID не настроен — не могу создать ссылку на канал.")
+        return
+
+    invite_link = await _create_invite_link(message.bot, telegram_id)
+    if invite_link is None:
+        await message.answer(
+            f"❌ Не удалось создать ссылку-приглашение для telegram_id {telegram_id} "
+            "(ошибка Telegram API)."
+        )
+        return
+
+    try:
+        await message.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "🔗 Вот свежая ссылка на канал:\n\n"
+                f"{invite_link}\n\n"
+                "Ссылка одноразовая — не передавай её другим 💫"
+            ),
+        )
+    except TelegramAPIError as exc:
+        await message.answer(
+            f"⚠️ Не удалось отправить ссылку в личные сообщения telegram_id {telegram_id} "
+            f"— он, вероятно, не запускал бота ({exc}).\n\n"
+            f"Перешли вручную:\n{invite_link}"
+        )
+        return
+
+    await message.answer(f"✅ Ссылка на канал отправлена telegram_id {telegram_id}.")
 
 
 @router.message(ScreenshotState.waiting_for_screenshot)
