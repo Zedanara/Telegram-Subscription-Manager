@@ -200,6 +200,46 @@ async def test_renewal_while_expiring_reuses_that_subscription_additively(
     assert len(live) == 1
 
 
+async def test_stripe_checkout_while_expiring_reuses_that_subscription_too(
+    sqlite_session_factory,
+):
+    """Same fix, exercised through the Stripe path specifically — it shares
+    _activate_subscription with /activate, but this confirms that sharing
+    actually holds rather than assuming it from one caller's test."""
+    first = await payment_service.activate_paid_checkout(
+        telegram_id=1004, session_id="cs_test_expiring_1", amount=Decimal("55"), currency="PLN"
+    )
+    expiring_expires_at = utcnow() + timedelta(days=1)
+
+    async with sqlite_session_factory() as session:
+        await session.execute(
+            update(Subscription)
+            .where(Subscription.id == first.id)
+            .values(status=SubscriptionStatus.EXPIRING, expires_at=expiring_expires_at)
+        )
+        await session.commit()
+
+    renewed = await payment_service.activate_paid_checkout(
+        telegram_id=1004, session_id="cs_test_expiring_2", amount=Decimal("55"), currency="PLN"
+    )
+
+    assert renewed.id == first.id
+    assert renewed.status == SubscriptionStatus.ACTIVE
+    expected = expiring_expires_at + timedelta(days=payment_service.SUBSCRIPTION_DAYS)
+    assert abs((renewed.expires_at - expected).total_seconds()) < 5
+
+    async with sqlite_session_factory() as session:
+        result = await session.execute(
+            select(Subscription).where(Subscription.user_id == first.user_id)
+        )
+        live = [
+            s
+            for s in result.scalars().all()
+            if s.status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRING)
+        ]
+    assert len(live) == 1
+
+
 async def test_renewal_resets_last_warning_days_left(sqlite_session_factory):
     """A renewal must give the next cycle all three reminders again — see
     app/jobs/expiration_warnings.py."""
