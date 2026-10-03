@@ -53,6 +53,14 @@ def _warning_text(days_left: int, expires_at) -> str:
 
 
 async def _warn_one(bot: Bot, subscription: Subscription) -> None:
+    days_left = days_remaining(subscription.expires_at)
+    if not 1 <= days_left <= WARNING_WINDOW_DAYS:
+        # list_expiring_within already filters for this — a defensive
+        # re-check that must run BEFORE any transition below, otherwise a
+        # subscription outside the window that somehow still reached this
+        # point would get mutated to EXPIRING despite not being due yet.
+        return
+
     if subscription.status == SubscriptionStatus.ACTIVE:
         try:
             subscription = await SubscriptionRepository.update_status(
@@ -67,13 +75,6 @@ async def _warn_one(bot: Bot, subscription: Subscription) -> None:
                 subscription.id,
             )
             return
-
-    days_left = days_remaining(subscription.expires_at)
-    if not 1 <= days_left <= WARNING_WINDOW_DAYS:
-        # Can happen right after the ACTIVE -> EXPIRING transition above if
-        # expires_at is further out than the window — list_expiring_within
-        # already filters for this, so this is just a defensive re-check.
-        return
 
     already_warned_for_this_or_a_later_day = (
         subscription.last_warning_days_left is not None
