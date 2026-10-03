@@ -44,6 +44,13 @@ def get_payment_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text='↩️ Назад в меню', callback_data='main_menu')]
     ])
 
+# Кнопка «Продлить» в напоминаниях об истечении подписки — тот же callback
+# ('payment'), что уже открывает меню оплаты (show_payment в handlers.py),
+# никакого нового хендлера не требуется.
+renewal_reminder_menu = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text='💳 Оформить подписку', callback_data='payment')]
+])
+
 # Кнопка со ссылкой на готовую Stripe Checkout Session
 def get_stripe_checkout_keyboard(checkout_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
