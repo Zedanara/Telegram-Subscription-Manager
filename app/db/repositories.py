@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -135,6 +135,13 @@ class UserRepository:
 
 
 class SubscriptionRepository:
+    @staticmethod
+    async def get_by_id(
+        subscription_id: int, session: AsyncSession | None = None
+    ) -> Subscription | None:
+        async with _session_scope(session) as (db, _):
+            return await db.get(Subscription, subscription_id)
+
     @staticmethod
     async def get_active_for_user(
         user_id: int, session: AsyncSession | None = None
@@ -271,6 +278,34 @@ class SubscriptionRepository:
             return list(result.scalars().all())
 
     @staticmethod
+    async def list_users_with_multiple_live_subscriptions(
+        session: AsyncSession | None = None,
+    ) -> list[tuple[int, list[int]]]:
+        """(user_id, [subscription_id, ...]) for every user who currently
+        has more than one ACTIVE/EXPIRING subscription — the data-corruption
+        pattern the renewal-reuses-live-subscription fix closes off going
+        forward (see app/services/payment_service.py). Read-only: existing
+        damage needs a reviewed, manual fix, not an automatic one.
+
+        Grouped in Python rather than via SQL GROUP BY/HAVING + array_agg so
+        this runs unchanged against both Postgres and the sqlite test
+        fixture — the subscriptions table is small, so this is not a
+        meaningful cost.
+        """
+        async with _session_scope(session) as (db, _):
+            result = await db.execute(
+                select(Subscription.user_id, Subscription.id).where(
+                    Subscription.status.in_(
+                        [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRING]
+                    )
+                )
+            )
+            by_user: dict[int, list[int]] = {}
+            for user_id, subscription_id in result.all():
+                by_user.setdefault(user_id, []).append(subscription_id)
+            return [(user_id, ids) for user_id, ids in by_user.items() if len(ids) > 1]
+
+    @staticmethod
     async def list_expired(session: AsyncSession | None = None) -> list[Subscription]:
         now = utcnow()
         async with _session_scope(session) as (db, _):
@@ -326,6 +361,27 @@ class PaymentRepository:
             if owned:
                 await db.refresh(payment)
             return payment
+
+    @staticmethod
+    async def repoint_subscription(
+        old_subscription_id: int,
+        new_subscription_id: int,
+        session: AsyncSession | None = None,
+    ) -> None:
+        """Move every Payment currently on old_subscription_id onto
+        new_subscription_id — used when a manual payment's PENDING
+        placeholder subscription turns out to belong to a payer who already
+        has a live one (see payment_service.confirm_manual_payment): the
+        payment moves to the live row, the placeholder is left behind
+        inert rather than activated as a second subscription."""
+        async with _session_scope(session) as (db, owned):
+            await db.execute(
+                update(Payment)
+                .where(Payment.subscription_id == old_subscription_id)
+                .values(subscription_id=new_subscription_id)
+            )
+            if owned:
+                await db.commit()
 
     @staticmethod
     async def get_by_provider_ref(
