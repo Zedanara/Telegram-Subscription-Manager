@@ -90,6 +90,12 @@ async def _activate_subscription(
                     expires_at=expires_at,
                     session=db,
                 )
+                # A fresh 30-day cycle starts here, whether or not a reminder
+                # was already sent in the previous one — see
+                # app/jobs/expiration_warnings.py.
+                await SubscriptionRepository.set_last_warning_days_left(
+                    subscription.id, None, session=db
+                )
                 payment_id = payment.id
                 subscription_id = subscription.id
         except DuplicatePaymentError:
