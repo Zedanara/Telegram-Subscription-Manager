@@ -212,6 +212,26 @@ class SubscriptionRepository:
             return subscription
 
     @staticmethod
+    async def set_last_warning_days_left(
+        subscription_id: int, days_left: int | None, session: AsyncSession | None = None
+    ) -> Subscription:
+        """Record which days-left count the most recent expiration reminder
+        warned about (app/jobs/expiration_warnings.py), or reset it to None
+        on renewal (app/services/payment_service.py, app/handlers.py's
+        confirm_payment) so the next cycle gets all three reminders again."""
+        async with _session_scope(session) as (db, owned):
+            subscription = await db.get(Subscription, subscription_id)
+            if subscription is None:
+                raise ValueError(f"Subscription {subscription_id} not found")
+            subscription.last_warning_days_left = days_left
+            if owned:
+                await db.commit()
+                await db.refresh(subscription)
+            else:
+                await db.flush()
+            return subscription
+
+    @staticmethod
     async def list_expiring_within(
         days: int, session: AsyncSession | None = None
     ) -> list[Subscription]:
