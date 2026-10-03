@@ -4,6 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from aiogram import F, Router
+from aiogram.enums import ChatMemberStatus
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -436,6 +438,134 @@ async def admin_activate(message: Message, command: CommandObject):
         f"✅ Активировано вручную: {display_name} (telegram_id {telegram_id})\n"
         f"Подписка активна до {expires_str}."
     )
+
+
+# Delay between per-subscriber Telegram API calls in /subscribers — this
+# report can walk hundreds of rows (get_chat + get_chat_member each), and
+# without a delay that is a burst well past Telegram's per-bot rate limits.
+_SUBSCRIBERS_API_DELAY = 0.05
+
+_NOT_IN_CHANNEL_STATUSES = frozenset({ChatMemberStatus.LEFT, ChatMemberStatus.KICKED})
+
+_TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+async def _resolve_display_name(bot, telegram_id: int) -> str:
+    """Display name + @username for a /subscribers row, falling back to the
+    bare numeric id if get_chat fails — must never raise, so one broken
+    lookup can't abort the whole report."""
+    try:
+        chat = await bot.get_chat(telegram_id)
+    except TelegramAPIError:
+        return str(telegram_id)
+    name = chat.full_name or str(telegram_id)
+    return f"{name} (@{chat.username})" if chat.username else name
+
+
+async def _resolve_membership_status(bot, channel_id, telegram_id: int) -> ChatMemberStatus | None:
+    """Live channel membership status, or None when the lookup itself
+    failed — the caller reports that row as "unknown" rather than aborting."""
+    try:
+        member = await bot.get_chat_member(chat_id=channel_id, user_id=telegram_id)
+    except TelegramAPIError:
+        return None
+    return member.status
+
+
+def _split_into_chunks(lines: list[str], limit: int = _TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Group `lines` into newline-joined chunks, each at or under `limit`
+    characters, without splitting a line in half."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        extra = len(line) + (1 if current else 0)
+        if current and current_len + extra > limit:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += extra
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+@router.message(Command('subscribers'))
+async def admin_subscribers(message: Message):
+    """Админ-отчёт по всем ACTIVE/EXPIRING подписчикам: имя/@username,
+    провайдер последней оплаты, дата окончания и живой статус членства в
+    канале — чтобы Ирина могла сверить "кто оплатил" с "кто в канале" и
+    вручную убрать ~190 легаси-бесплатных участников.
+
+    Полностью read-only: ни одна строка в БД не меняется. Молча игнорируется
+    для не-админа, как и остальные админ-действия в этом файле.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    subscriptions = await SubscriptionRepository.list_active_or_expiring()
+
+    channel_configured = bool(settings.channel_id)
+
+    lines: list[str] = []
+    if not channel_configured:
+        lines.append("⚠️ CHANNEL_ID не настроен — колонка статуса в канале пропущена.")
+        lines.append("")
+
+    provider_counts: dict[str, int] = {}
+    in_channel_count = 0
+    not_in_channel_count = 0
+
+    for subscription in subscriptions:
+        user = subscription.user
+        latest_payment = max(subscription.payments, key=lambda p: p.id, default=None)
+        provider = latest_payment.provider if latest_payment is not None else "—"
+        provider_counts[provider] = provider_counts.get(provider, 0) + 1
+
+        display = await _resolve_display_name(message.bot, user.telegram_id)
+        await asyncio.sleep(_SUBSCRIBERS_API_DELAY)
+
+        expires_str = (
+            subscription.expires_at.strftime("%Y-%m-%d")
+            if subscription.expires_at is not None
+            else "—"
+        )
+
+        line = f"{display} — id {user.telegram_id} — provider: {provider} — до {expires_str}"
+
+        if channel_configured:
+            status = await _resolve_membership_status(
+                message.bot, settings.channel_id, user.telegram_id
+            )
+            await asyncio.sleep(_SUBSCRIBERS_API_DELAY)
+            if status is None:
+                line += " — канал: неизвестно (ошибка API)"
+            elif status in _NOT_IN_CHANNEL_STATUSES:
+                line += f" — канал: {status.value} — NOT IN CHANNEL"
+                not_in_channel_count += 1
+            else:
+                line += f" — канал: {status.value}"
+                in_channel_count += 1
+
+        lines.append(line)
+
+    if not subscriptions:
+        lines.append("Нет активных подписчиков.")
+
+    lines.append("")
+    lines.append("📊 Сводка:")
+    lines.append(f"Всего платящих: {len(subscriptions)}")
+    if channel_configured:
+        lines.append(f"В канале: {in_channel_count}")
+        lines.append(f"НЕ в канале: {not_in_channel_count}")
+    lines.append("По провайдерам:")
+    for provider in sorted(provider_counts):
+        lines.append(f"  {provider}: {provider_counts[provider]}")
+
+    for chunk in _split_into_chunks(lines):
+        await message.answer(chunk)
 
 
 @router.message(ScreenshotState.waiting_for_screenshot)
