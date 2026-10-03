@@ -5,16 +5,19 @@ database, same pattern and caveat as tests/test_payment_service.py: this
 does not exercise Postgres-specific TIMESTAMPTZ behaviour, only the
 activation logic.
 """
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.models import Base, Payment, Subscription, SubscriptionStatus
 from app.db.repositories import SubscriptionRepository, UserRepository
+from app.domain.subscription import InvalidTransitionError
 from app.domain.time import utcnow
 from app.services import payment_service
 
@@ -142,3 +145,74 @@ async def test_confirming_while_expiring_reuses_and_resets_reminder_field(
     assert activated.id == live.id
     assert activated.status == SubscriptionStatus.ACTIVE
     assert activated.last_warning_days_left is None
+
+
+async def test_double_tap_with_no_live_subscription_does_not_extend_twice(
+    sqlite_session_factory,
+):
+    """Case (a): the placeholder itself gets activated. A second tap (double
+    click, or a retried callback after a timeout) must be rejected the same
+    way an already-processed payment always is — not silently re-extend."""
+    pending_id = await _seed_pending_screenshot_payment(sqlite_session_factory, 2004)
+
+    first = await payment_service.confirm_manual_payment(pending_id)
+
+    with pytest.raises(InvalidTransitionError):
+        await payment_service.confirm_manual_payment(pending_id)
+
+    async with sqlite_session_factory() as session:
+        reloaded = await session.get(Subscription, pending_id)
+    assert reloaded.expires_at == first.expires_at
+
+
+async def test_double_tap_with_live_subscription_reuse_does_not_extend_twice(
+    sqlite_session_factory,
+):
+    """Case (b): the Payment gets re-pointed onto an existing live
+    subscription and THAT row is extended. A second tap must be rejected —
+    the placeholder no longer owns a Payment, even though it is still
+    (and stays) PENDING."""
+    live = await payment_service.activate_manual_admin_grant(telegram_id=2005)
+    pending_id = await _seed_pending_screenshot_payment(sqlite_session_factory, 2005)
+
+    first = await payment_service.confirm_manual_payment(pending_id)
+    assert first.id == live.id
+
+    with pytest.raises(InvalidTransitionError):
+        await payment_service.confirm_manual_payment(pending_id)
+
+    async with sqlite_session_factory() as session:
+        reloaded = await session.get(Subscription, live.id)
+    assert reloaded.expires_at == first.expires_at
+
+
+async def test_concurrent_double_tap_cannot_be_verified_under_sqlite(
+    sqlite_session_factory,
+):
+    """Best-effort concurrency check, and a documented limitation rather
+    than a correctness proof: SQLite has no real row-level locking, so
+    get_by_id's for_update=True (SELECT ... FOR UPDATE) is a no-op here —
+    confirmed by actually firing two "concurrent" confirms of the same
+    placeholder below and observing that BOTH succeed. On Postgres, the
+    second transaction's SELECT ... FOR UPDATE blocks until the first
+    commits, then sees the no-longer-PENDING row and correctly raises
+    InvalidTransitionError instead — that guarantee is verified by reading
+    the code (get_by_id's with_for_update call, confirm_manual_payment's
+    guard), not by this test, since sqlite cannot exercise it.
+
+    The sequential double-tap tests above are what actually verify the
+    guard logic itself works; this one only confirms the code does not
+    crash either way sqlite happens to interleave it.
+    """
+    pending_id = await _seed_pending_screenshot_payment(sqlite_session_factory, 2006)
+
+    results = await asyncio.gather(
+        payment_service.confirm_manual_payment(pending_id),
+        payment_service.confirm_manual_payment(pending_id),
+        return_exceptions=True,
+    )
+
+    assert all(
+        isinstance(r, Subscription) or isinstance(r, InvalidTransitionError)
+        for r in results
+    )
