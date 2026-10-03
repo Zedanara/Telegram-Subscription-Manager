@@ -19,6 +19,7 @@ from app.config import settings
 from app.db.models import Subscription, SubscriptionStatus
 from app.db.repositories import SubscriptionRepository, UserRepository
 from app.domain.subscription import InvalidTransitionError
+from app.domain.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,20 @@ async def _remove_from_channel(bot: Bot, telegram_id: int) -> None:
         )
 
 
+async def _find_other_live_subscription(user_id: int) -> Subscription | None:
+    """The user's other ACTIVE/EXPIRING subscription with a still-future
+    expires_at, if any. Called after the subscription being kicked has
+    already been advanced to KICKED, so any live row this finds is
+    necessarily a different one — the renewal-reuses-live-subscription fix
+    (app/services/payment_service.py) prevents new instances of this, but
+    does not retroactively repair rows that already drifted apart before
+    that fix landed (see SubscriptionRepository.list_users_with_multiple_live_subscriptions)."""
+    live = await SubscriptionRepository.get_active_or_expiring_for_user(user_id)
+    if live is not None and live.expires_at is not None and live.expires_at > utcnow():
+        return live
+    return None
+
+
 async def _kick_one(bot: Bot, subscription: Subscription) -> None:
     try:
         kicked = await _advance_to_kicked(subscription.id, subscription.status)
@@ -156,6 +171,22 @@ async def _kick_one(bot: Bot, subscription: Subscription) -> None:
             "Subscription %s transitioned to KICKED but its user %s is missing",
             kicked.id,
             kicked.user_id,
+        )
+        return
+
+    other_live = await _find_other_live_subscription(user.id)
+    if other_live is not None:
+        # The DB side is already closed out above (subscription is KICKED) —
+        # only the Telegram side effects are skipped, since the user is
+        # legitimately still paying under their other subscription.
+        logger.warning(
+            "telegram_id=%s has another live subscription (id=%s) after "
+            "subscription id=%s was closed out as KICKED — skipping the "
+            "channel ban and DM; they remain in the channel under the live "
+            "subscription.",
+            user.telegram_id,
+            other_live.id,
+            kicked.id,
         )
         return
 
