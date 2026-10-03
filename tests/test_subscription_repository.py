@@ -4,6 +4,7 @@ via the db_session fixture, since the handler tests mock this method out
 entirely and would never catch a wrong relationship name or a bad status
 filter here.
 """
+import logging
 from datetime import timedelta
 from decimal import Decimal
 
@@ -72,3 +73,127 @@ async def test_list_active_or_expiring_is_read_only(db_session):
     assert not db_session.in_transaction() or not db_session.dirty
     assert not db_session.new
     assert not db_session.deleted
+
+
+async def test_list_users_with_multiple_live_subscriptions_finds_duplicates(db_session):
+    """The detection query for task 5 of the renewal-reuses-live-subscription
+    fix: a user with two ACTIVE/EXPIRING rows at once is exactly the
+    data-corruption pattern that fix closes off going forward."""
+    now = utcnow()
+
+    duplicated_user = User(telegram_id=1)
+    clean_user = User(telegram_id=2)
+    db_session.add_all([duplicated_user, clean_user])
+    await db_session.flush()
+
+    dup_sub_1 = Subscription(
+        user_id=duplicated_user.id,
+        status=SubscriptionStatus.EXPIRING,
+        expires_at=now - timedelta(hours=1),
+    )
+    dup_sub_2 = Subscription(
+        user_id=duplicated_user.id,
+        status=SubscriptionStatus.ACTIVE,
+        expires_at=now + timedelta(days=25),
+    )
+    clean_sub = Subscription(
+        user_id=clean_user.id, status=SubscriptionStatus.ACTIVE, expires_at=now + timedelta(days=10)
+    )
+    db_session.add_all([dup_sub_1, dup_sub_2, clean_sub])
+    await db_session.commit()
+
+    results = await SubscriptionRepository.list_users_with_multiple_live_subscriptions(
+        session=db_session
+    )
+
+    assert len(results) == 1
+    user_id, subscription_ids = results[0]
+    assert user_id == duplicated_user.id
+    assert set(subscription_ids) == {dup_sub_1.id, dup_sub_2.id}
+
+
+async def test_list_users_with_multiple_live_subscriptions_ignores_terminal_statuses(
+    db_session,
+):
+    """A user with one live subscription plus old EXPIRED/KICKED/PENDING
+    rows is not a duplicate — those statuses are never "live"."""
+    now = utcnow()
+    user = User(telegram_id=1)
+    db_session.add(user)
+    await db_session.flush()
+
+    live = Subscription(
+        user_id=user.id, status=SubscriptionStatus.ACTIVE, expires_at=now + timedelta(days=10)
+    )
+    old_expired = Subscription(
+        user_id=user.id, status=SubscriptionStatus.EXPIRED, expires_at=now - timedelta(days=40)
+    )
+    old_kicked = Subscription(
+        user_id=user.id, status=SubscriptionStatus.KICKED, expires_at=now - timedelta(days=70)
+    )
+    old_pending = Subscription(user_id=user.id, status=SubscriptionStatus.PENDING, expires_at=None)
+    db_session.add_all([live, old_expired, old_kicked, old_pending])
+    await db_session.commit()
+
+    results = await SubscriptionRepository.list_users_with_multiple_live_subscriptions(
+        session=db_session
+    )
+
+    assert results == []
+
+
+async def test_get_active_or_expiring_for_user_picks_latest_expiry_when_duplicated(
+    db_session, caplog
+):
+    """The duplicate-safe lookup: pre-fix damage can leave a user with two
+    live rows at once. This must not raise, must return the one with the
+    latest expires_at (the correct one to keep renewing), and must log a
+    WARNING naming the user and every row found."""
+    now = utcnow()
+    user = User(telegram_id=1)
+    db_session.add(user)
+    await db_session.flush()
+
+    older_live = Subscription(
+        user_id=user.id, status=SubscriptionStatus.EXPIRING, expires_at=now - timedelta(hours=1)
+    )
+    newer_live = Subscription(
+        user_id=user.id, status=SubscriptionStatus.ACTIVE, expires_at=now + timedelta(days=25)
+    )
+    db_session.add_all([older_live, newer_live])
+    await db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="app.db.repositories"):
+        result = await SubscriptionRepository.get_active_or_expiring_for_user(
+            user.id, session=db_session
+        )
+
+    assert result.id == newer_live.id
+
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert str(user.id) in message
+    assert str(older_live.id) in message
+    assert str(newer_live.id) in message
+
+
+async def test_get_active_or_expiring_for_user_no_warning_for_a_single_result(
+    db_session, caplog
+):
+    now = utcnow()
+    user = User(telegram_id=1)
+    db_session.add(user)
+    await db_session.flush()
+    live = Subscription(
+        user_id=user.id, status=SubscriptionStatus.ACTIVE, expires_at=now + timedelta(days=10)
+    )
+    db_session.add(live)
+    await db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="app.db.repositories"):
+        result = await SubscriptionRepository.get_active_or_expiring_for_user(
+            user.id, session=db_session
+        )
+
+    assert result.id == live.id
+    assert caplog.records == []

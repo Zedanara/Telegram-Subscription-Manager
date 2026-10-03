@@ -1,9 +1,10 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,6 +13,8 @@ from app.db.models import Payment, Subscription, SubscriptionStatus, User
 from app.db.session import get_session
 from app.domain.subscription import transition
 from app.domain.time import utcnow
+
+logger = logging.getLogger(__name__)
 
 # Name of the constraint declared on Payment; see the model for why it exists.
 PAYMENT_PROVIDER_REF_CONSTRAINT = "uq_payments_provider_provider_ref"
@@ -136,6 +139,22 @@ class UserRepository:
 
 class SubscriptionRepository:
     @staticmethod
+    async def get_by_id(
+        subscription_id: int,
+        session: AsyncSession | None = None,
+        for_update: bool = False,
+    ) -> Subscription | None:
+        """for_update=True issues SELECT ... FOR UPDATE, locking the row for
+        the rest of the caller's transaction — used by
+        payment_service.confirm_manual_payment so two concurrent confirms of
+        the same placeholder can't both pass its already-processed check.
+        No-op on SQLite (no row-level locking there), real on Postgres."""
+        async with _session_scope(session) as (db, _):
+            return await db.get(
+                Subscription, subscription_id, with_for_update=for_update or None
+            )
+
+    @staticmethod
     async def get_active_for_user(
         user_id: int, session: AsyncSession | None = None
     ) -> Subscription | None:
@@ -154,6 +173,17 @@ class SubscriptionRepository:
     async def get_active_or_expiring_for_user(
         user_id: int, session: AsyncSession | None = None
     ) -> Subscription | None:
+        """The user's live (ACTIVE/EXPIRING) subscription.
+
+        Pre-fix (see payment_service._find_or_create_subscription), a user
+        could end up with more than one live row at once — this must not
+        raise on that, since it is itself on the path every renewal takes.
+        When more than one is found, the one with the latest expires_at
+        wins (the correct row to keep renewing) and this logs a WARNING
+        naming the user and every row found, so the duplicate surfaces
+        without crashing anything; the other, stale row is left for
+        app.jobs.auto_kick's safety net to close out on its own schedule.
+        """
         async with _session_scope(session) as (db, _):
             result = await db.execute(
                 select(Subscription)
@@ -163,9 +193,19 @@ class SubscriptionRepository:
                         [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRING]
                     ),
                 )
-                .order_by(Subscription.created_at.desc())
+                .order_by(Subscription.expires_at.desc())
             )
-            return result.scalars().first()
+            live = list(result.scalars().all())
+            if len(live) > 1:
+                logger.warning(
+                    "User %s has %d live (ACTIVE/EXPIRING) subscriptions: %s — "
+                    "using the one with the latest expires_at (id %s)",
+                    user_id,
+                    len(live),
+                    [s.id for s in live],
+                    live[0].id,
+                )
+            return live[0] if live else None
 
     @staticmethod
     async def create(
@@ -271,6 +311,34 @@ class SubscriptionRepository:
             return list(result.scalars().all())
 
     @staticmethod
+    async def list_users_with_multiple_live_subscriptions(
+        session: AsyncSession | None = None,
+    ) -> list[tuple[int, list[int]]]:
+        """(user_id, [subscription_id, ...]) for every user who currently
+        has more than one ACTIVE/EXPIRING subscription — the data-corruption
+        pattern the renewal-reuses-live-subscription fix closes off going
+        forward (see app/services/payment_service.py). Read-only: existing
+        damage needs a reviewed, manual fix, not an automatic one.
+
+        Grouped in Python rather than via SQL GROUP BY/HAVING + array_agg so
+        this runs unchanged against both Postgres and the sqlite test
+        fixture — the subscriptions table is small, so this is not a
+        meaningful cost.
+        """
+        async with _session_scope(session) as (db, _):
+            result = await db.execute(
+                select(Subscription.user_id, Subscription.id).where(
+                    Subscription.status.in_(
+                        [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRING]
+                    )
+                )
+            )
+            by_user: dict[int, list[int]] = {}
+            for user_id, subscription_id in result.all():
+                by_user.setdefault(user_id, []).append(subscription_id)
+            return [(user_id, ids) for user_id, ids in by_user.items() if len(ids) > 1]
+
+    @staticmethod
     async def list_expired(session: AsyncSession | None = None) -> list[Subscription]:
         now = utcnow()
         async with _session_scope(session) as (db, _):
@@ -287,6 +355,22 @@ class SubscriptionRepository:
 
 
 class PaymentRepository:
+    @staticmethod
+    async def get_for_subscription(
+        subscription_id: int, session: AsyncSession | None = None
+    ) -> Payment | None:
+        """Any Payment currently pointing at subscription_id — used by
+        payment_service.confirm_manual_payment to tell "this placeholder
+        still owns the payment that was created for it" apart from "a
+        previous confirm already re-pointed it elsewhere"."""
+        async with _session_scope(session) as (db, _):
+            result = await db.execute(
+                select(Payment)
+                .where(Payment.subscription_id == subscription_id)
+                .order_by(Payment.id)
+            )
+            return result.scalars().first()
+
     @staticmethod
     async def create(
         subscription_id: int,
@@ -326,6 +410,27 @@ class PaymentRepository:
             if owned:
                 await db.refresh(payment)
             return payment
+
+    @staticmethod
+    async def repoint_subscription(
+        old_subscription_id: int,
+        new_subscription_id: int,
+        session: AsyncSession | None = None,
+    ) -> None:
+        """Move every Payment currently on old_subscription_id onto
+        new_subscription_id — used when a manual payment's PENDING
+        placeholder subscription turns out to belong to a payer who already
+        has a live one (see payment_service.confirm_manual_payment): the
+        payment moves to the live row, the placeholder is left behind
+        inert rather than activated as a second subscription."""
+        async with _session_scope(session) as (db, owned):
+            await db.execute(
+                update(Payment)
+                .where(Payment.subscription_id == old_subscription_id)
+                .values(subscription_id=new_subscription_id)
+            )
+            if owned:
+                await db.commit()
 
     @staticmethod
     async def get_by_provider_ref(

@@ -7,6 +7,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
+from app.db.repositories import SubscriptionRepository
 from app.handlers import router
 from app.jobs.auto_kick import register as register_auto_kick
 from app.jobs.expiration_warnings import register as register_expiration_warnings
@@ -36,6 +37,18 @@ async def main():
 
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Бот запущен")
+
+    # Surfaces existing damage from the pre-fix renewal bug (a payer renewed
+    # while EXPIRING and got a second, brand-new subscription instead of
+    # their existing one being extended) — read-only, fixes nothing by
+    # itself. See SubscriptionRepository.list_users_with_multiple_live_subscriptions.
+    duplicates = await SubscriptionRepository.list_users_with_multiple_live_subscriptions()
+    for user_id, subscription_ids in duplicates:
+        logger.warning(
+            "User %s has multiple live (ACTIVE/EXPIRING) subscriptions: %s",
+            user_id,
+            subscription_ids,
+        )
 
     scheduler = build_scheduler()
     register_expiration_warnings(scheduler)
