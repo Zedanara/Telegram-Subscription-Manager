@@ -10,13 +10,16 @@ activation transaction's logic (user/subscription/payment creation, the
 state machine transition, idempotency).
 """
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.db.models import Base, Payment, SubscriptionStatus
+from app.db.models import Base, Payment, Subscription, SubscriptionStatus
+from app.db.repositories import SubscriptionRepository
+from app.domain.time import utcnow
 from app.services import payment_service
 
 
@@ -107,3 +110,52 @@ async def test_activate_manual_admin_grant_renews_existing_active_subscription(
     assert second.id == first.id
     assert second.status == SubscriptionStatus.ACTIVE
     assert second.expires_at >= first.expires_at
+
+
+async def test_renewal_restarts_expires_at_from_now_rather_than_extending_it(
+    sqlite_session_factory,
+):
+    """Documents current behaviour per the multi-day-reminders task: paying
+    again while still ACTIVE restarts the 30-day clock from now, it does not
+    add 30 days on top of the existing expires_at.
+
+    Both activation calls happen moments apart in real time, so the two
+    expires_at values alone would look identical either way — the test
+    instead gives the existing subscription a implausibly-far-out expires_at
+    (as if it still had 100 days left) before renewing. An additive renewal
+    would push that another 30 days out (~130 days from now); a
+    restart-from-now renewal overwrites it with ~30 days from now — the two
+    outcomes are ~100 days apart, unmistakably different.
+    """
+    first = await payment_service.activate_manual_admin_grant(telegram_id=888)
+    far_future_expires_at = first.expires_at + timedelta(days=100)
+
+    async with sqlite_session_factory() as session:
+        await session.execute(
+            update(Subscription)
+            .where(Subscription.id == first.id)
+            .values(expires_at=far_future_expires_at)
+        )
+        await session.commit()
+
+    renewed = await payment_service.activate_manual_admin_grant(telegram_id=888)
+
+    assert renewed.expires_at < far_future_expires_at - timedelta(days=50)
+    assert utcnow() + timedelta(days=29) < renewed.expires_at < utcnow() + timedelta(days=31)
+
+
+async def test_renewal_resets_last_warning_days_left(sqlite_session_factory):
+    """A renewal must give the next cycle all three reminders again — see
+    app/jobs/expiration_warnings.py."""
+    first = await payment_service.activate_manual_admin_grant(telegram_id=999)
+
+    async with sqlite_session_factory() as session:
+        await SubscriptionRepository.set_last_warning_days_left(
+            first.id, 2, session=session
+        )
+        await session.commit()
+
+    renewed = await payment_service.activate_manual_admin_grant(telegram_id=999)
+
+    assert renewed.id == first.id
+    assert renewed.last_warning_days_left is None
