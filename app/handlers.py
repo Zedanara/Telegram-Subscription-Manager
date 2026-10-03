@@ -1,5 +1,4 @@
 import asyncio
-from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -26,7 +25,7 @@ from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, plur
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
 from app.services.channel_access import _create_invite_link, confirm_and_grant_access
-from app.services.payment_service import activate_manual_admin_grant
+from app.services.payment_service import activate_manual_admin_grant, confirm_manual_payment
 from app.services.stripe_service import create_checkout_session
 
 router = Router()
@@ -295,28 +294,26 @@ async def receive_screenshot(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith('confirm_payment:'))
 async def confirm_payment(callback: CallbackQuery):
-    """Админ подтверждает оплату и активирует подписку"""
+    """Админ подтверждает оплату и активирует подписку.
+
+    Activation itself goes through payment_service.confirm_manual_payment —
+    the same renewal logic (live-subscription reuse, additive expiry,
+    reminder-field reset) as the Stripe and /activate paths, so this one
+    doesn't duplicate or drift from it. See that function's docstring for
+    how it handles a payer who already has a live subscription by the time
+    the screenshot gets confirmed.
+    """
     if callback.from_user.id != ADMIN_ID:
         await callback.answer()
         return
 
     subscription_id = int(callback.data.split(':', 1)[1])
-    expires_at = utcnow() + timedelta(days=30)
 
     try:
-        subscription = await SubscriptionRepository.update_status(
-            subscription_id, SubscriptionStatus.ACTIVE, expires_at=expires_at
-        )
+        subscription = await confirm_manual_payment(subscription_id)
     except InvalidTransitionError:
         await callback.answer("Эта оплата уже обработана.", show_alert=True)
         return
-
-    # A fresh 30-day cycle starts here, whether or not a reminder was already
-    # sent in the previous one — see app/jobs/expiration_warnings.py. This
-    # path activates directly instead of going through
-    # app.services.payment_service._activate_subscription, so it needs the
-    # same reset explicitly.
-    await SubscriptionRepository.set_last_warning_days_left(subscription.id, None)
 
     subscriber = await UserRepository.get_by_id(subscription.user_id)
     if subscriber is not None:
