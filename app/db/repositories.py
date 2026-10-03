@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import Payment, Subscription, SubscriptionStatus, User
 from app.db.session import get_session
@@ -226,6 +227,26 @@ class SubscriptionRepository:
                     Subscription.expires_at >= now,
                     Subscription.expires_at <= threshold,
                 )
+            )
+            return list(result.scalars().all())
+
+    @staticmethod
+    async def list_active_or_expiring(
+        session: AsyncSession | None = None,
+    ) -> list[Subscription]:
+        """Every ACTIVE/EXPIRING subscription, with its user and payments
+        eagerly loaded — for the admin /subscribers report, which needs both
+        without issuing a query per row."""
+        async with _session_scope(session) as (db, _):
+            result = await db.execute(
+                select(Subscription)
+                .where(
+                    Subscription.status.in_(
+                        [SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRING]
+                    )
+                )
+                .options(selectinload(Subscription.user), selectinload(Subscription.payments))
+                .order_by(Subscription.id)
             )
             return list(result.scalars().all())
 
