@@ -311,6 +311,13 @@ async def confirm_payment(callback: CallbackQuery):
         await callback.answer("Эта оплата уже обработана.", show_alert=True)
         return
 
+    # A fresh 30-day cycle starts here, whether or not a reminder was already
+    # sent in the previous one — see app/jobs/expiration_warnings.py. This
+    # path activates directly instead of going through
+    # app.services.payment_service._activate_subscription, so it needs the
+    # same reset explicitly.
+    await SubscriptionRepository.set_last_warning_days_left(subscription.id, None)
+
     subscriber = await UserRepository.get_by_id(subscription.user_id)
     if subscriber is not None:
         try:
