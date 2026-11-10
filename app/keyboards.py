@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-from app.domain.pricing import get_current_price
+from app.domain.pricing import format_price
 
 # ========== ОБЫЧНЫЕ КЛАВИАТУРЫ (если нужны) ==========
 
@@ -32,12 +32,13 @@ inside_menu = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 
-# Меню раздела "Оплата"
-def get_payment_menu() -> InlineKeyboardMarkup:
-    price = get_current_price()
+# Меню раздела "Оплата". The caller passes the price it read from
+# get_current_price() for this screen, so the button label and the screen
+# text can never come from two different readings across the cutoff.
+def get_payment_menu(price: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f'💳 Оплатить картой / BLIK ({price} zł)',
+            text=f'💳 Оплатить картой / BLIK ({format_price(price)})',
             callback_data='stripe_checkout'
         )],
         [InlineKeyboardButton(text='📩 Отправить скрин оплаты', callback_data='send_screenshot')],
