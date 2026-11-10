@@ -4,7 +4,7 @@ from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,7 +20,7 @@ import app.keyboards as kb
 from app.config import settings
 from app.db.models import SubscriptionStatus
 from app.db.repositories import PaymentRepository, SubscriptionRepository, UserRepository
-from app.domain.pricing import get_current_price
+from app.domain.pricing import format_price, get_current_price
 from app.domain.rate_limit import QUESTION_COOLDOWN, minutes_until_allowed, pluralize_minutes_ru
 from app.domain.subscription import InvalidTransitionError
 from app.domain.time import days_remaining, format_date_ru, pluralize_days_ru, utcnow
@@ -142,17 +142,41 @@ async def show_examples(callback: CallbackQuery):
     await callback.answer("Примеры отправлены!")
 
 
+def _payment_screen_text(price: int) -> str:
+    return (
+        f"💳 Стоимость подписки: {format_price(price)} за 30 дней\n\n"
+        "⚡ Оплати картой или BLIK — доступ откроется автоматически, в течение минуты после оплаты.\n\n"
+        "📸 Если способ оплаты не подошёл — можно отправить скрин перевода, и я подтвержу доступ вручную в течение дня."
+    )
+
+
 @router.callback_query(F.data == 'payment')
 async def show_payment(callback: CallbackQuery):
     """Показать информацию об оплате"""
     price = get_current_price()
-    text = (
-        f"💳 Стоимость подписки: {price} zł за 30 дней\n\n"
-        "⚡ Оплати картой или BLIK — доступ откроется автоматически, в течение минуты после оплаты.\n\n"
-        "📸 Если способ оплаты не подошёл — можно отправить скрин перевода, и я подтвержу доступ вручную в течение дня."
-    )
-    await callback.message.edit_text(text, reply_markup=kb.get_payment_menu())
+    await callback.message.edit_text(_payment_screen_text(price), reply_markup=kb.get_payment_menu(price))
     await callback.answer()
+
+
+async def _refresh_payment_screen(message: object, price: int) -> None:
+    """Re-render a payment screen that may have been sent at an older price.
+
+    A Telegram message keeps the text and button labels it was rendered
+    with, so a payment screen opened before the price cutoff still says the
+    old price weeks later — tapping its button must not leave that on screen
+    while Checkout charges the current one.
+    """
+    if not isinstance(message, Message):  # inaccessible (too old) or absent
+        return
+    text = _payment_screen_text(price)
+    if message.text == text:
+        return
+    try:
+        await message.edit_text(text, reply_markup=kb.get_payment_menu(price))
+    except TelegramBadRequest:
+        # Not editable any more (deleted, too old) — the link message below
+        # still states the correct amount.
+        pass
 
 
 @router.callback_query(F.data == 'my_subscription')
@@ -191,10 +215,17 @@ async def show_my_subscription(callback: CallbackQuery):
 
 @router.callback_query(F.data == 'stripe_checkout')
 async def stripe_checkout(callback: CallbackQuery):
-    """Создать Stripe Checkout Session и отправить пользователю ссылку на оплату"""
-    checkout_url = await asyncio.to_thread(create_checkout_session, callback.from_user.id)
+    """Создать Stripe Checkout Session и отправить пользователю ссылку на оплату.
+
+    The price is read once, here, and used for the refreshed screen, the
+    link message and the Stripe amount alike — never the price printed on
+    the (possibly old) message whose button was tapped.
+    """
+    price = get_current_price()
+    await _refresh_payment_screen(callback.message, price)
+    checkout_url = await asyncio.to_thread(create_checkout_session, callback.from_user.id, price)
     text = (
-        "💳 Ссылка на оплату готова — доступны карта и BLIK.\n\n"
+        f"💳 Ссылка на оплату готова — к оплате {format_price(price)}, доступны карта и BLIK.\n\n"
         "После оплаты Ирина активирует твой доступ в течение дня 💫"
     )
     await callback.message.answer(text, reply_markup=kb.get_stripe_checkout_keyboard(checkout_url))
